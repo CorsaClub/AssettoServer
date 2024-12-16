@@ -3,7 +3,7 @@ using Autofac;
 
 namespace LogSessionPlugin;
 
-public class LogSessionModule : AssettoServerModule<CCLogSessionConfiguration>
+public class LogSessionModule : AssettoServerModule<CcLogSessionConfiguration>
 {
     protected override void Load(ContainerBuilder builder)
     {
