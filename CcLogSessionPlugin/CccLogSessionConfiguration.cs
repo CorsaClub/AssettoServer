@@ -5,7 +5,7 @@ using YamlDotNet.Serialization;
 namespace LogSessionPlugin;
 
 [UsedImplicitly(ImplicitUseKindFlags.Assign, ImplicitUseTargetFlags.WithMembers)]
-public class CCLogSessionConfiguration : IValidateConfiguration<LogSessionConfigurationValidator>
+public class CcLogSessionConfiguration : IValidateConfiguration<LogSessionConfigurationValidator>
 {
     [YamlMember(Description = "The unique ID that will be sent as part of the API POST request")]
     public int ServerId { get; init; }
