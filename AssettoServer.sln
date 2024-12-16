@@ -39,7 +39,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CustomCommandPlugin", "Cust
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReplayPlugin", "ReplayPlugin\ReplayPlugin.csproj", "{85A4319F-EB8C-4CC3-B107-6C319E537EB8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CCLogSessionPlugin", "CCLogSessionPlugin\CCLogSessionPlugin.csproj", "{FF778A2A-7C73-4EF1-98F4-CE3A675A1A5F}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CcLogSessionPlugin", "CcLogSessionPlugin\CCLogSessionPlugin.csproj", "{FF778A2A-7C73-4EF1-98F4-CE3A675A1A5F}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
