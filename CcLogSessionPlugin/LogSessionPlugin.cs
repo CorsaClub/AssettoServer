@@ -22,14 +22,14 @@ public class LogSessionPlugin : CriticalBackgroundService, IAssettoServerAutosta
     private int CurrentSessionGridInverted { get; set; } = 0;
     
     private readonly List<EntryCarLogSession> _instances = [];
-    private readonly CCLogSessionConfiguration _configuration;
+    private readonly CcLogSessionConfiguration _configuration;
     private readonly EntryCarManager _entryCarManager;
     private readonly SessionManager _sessionManager;
     private readonly ACServerConfiguration _serverConfiguration;
     private readonly Func<EntryCar, EntryCarLogSession> _entryCarLogSessionFactory;
     private readonly HttpClient _httpClient;
 
-    public LogSessionPlugin(CCLogSessionConfiguration configuration,
+    public LogSessionPlugin(CcLogSessionConfiguration configuration,
         EntryCarManager entryCarManager,
         SessionManager sessionManager,
         ACServerConfiguration serverConfiguration,
@@ -47,11 +47,11 @@ public class LogSessionPlugin : CriticalBackgroundService, IAssettoServerAutosta
         {
             if (!Path.Exists(_configuration.CrtPath))
             {
-                throw new ConfigurationException("CCLogSessionPlugin: .crt file not found");
+                throw new ConfigurationException("CcLogSessionPlugin: .crt file not found");
             }
             if (!Path.Exists(_configuration.KeyPath))
             {
-                throw new ConfigurationException("CCLogSessionPlugin: .key file not found");
+                throw new ConfigurationException("CcLogSessionPlugin: .key file not found");
             }
             
             var clientCertificate = X509Certificate2.CreateFromPemFile(_configuration.CrtPath, _configuration.KeyPath);
@@ -180,12 +180,12 @@ public class LogSessionPlugin : CriticalBackgroundService, IAssettoServerAutosta
         var response = await _httpClient.PostAsync(url, jsonData);
 
         var result = await response.Content.ReadAsStringAsync();
-        Log.Verbose("CCLogSessionPlugin: Data - {Data}", result);
+        Log.Verbose("CcLogSessionPlugin: Data - {Data}", result);
 
         if (response.IsSuccessStatusCode)
-            Log.Information("CCLogSessionPlugin: Data sent successfully");
+            Log.Information("CcLogSessionPlugin: Data sent successfully");
         else
-            Log.Warning("CCLogSessionPlugin: Data not sent successfully");
+            Log.Warning("CcLogSessionPlugin: Data not sent successfully");
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

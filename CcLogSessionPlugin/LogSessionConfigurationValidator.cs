@@ -4,7 +4,7 @@ using JetBrains.Annotations;
 namespace LogSessionPlugin;
 
 [UsedImplicitly]
-public class LogSessionConfigurationValidator : AbstractValidator<CCLogSessionConfiguration>
+public class LogSessionConfigurationValidator : AbstractValidator<CcLogSessionConfiguration>
 {
     public LogSessionConfigurationValidator()
     {
