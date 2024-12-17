@@ -71,7 +71,7 @@ public class NordschleifeTrackdayPlugin : CriticalBackgroundService, IAssettoSer
     public static int _pointsRewardBeatTb = 75;
     public static int _pointsRewardConvoy = 150;
 
-    public NordschleifeTrackdayPlugin(NordschleifeTrackdayConfiguration nordschleifeTrackdayConfiguration, GeoParamsManager geoParamsManager, ACServerConfiguration acServerConfiguration, EntryCarManager entryCarManager, SessionManager sessionManager, CSPServerScriptProvider cspServerScriptProvider, CSPClientMessageTypeManager cspClientMessageTypeManager, IHostApplicationLifetime applicationLifetime) : base(applicationLifetime)
+    public NordschleifeTrackdayPlugin(NordschleifeTrackdayConfiguration nordschleifeTrackdayConfiguration, GeoParamsManager geoParamsManager, ACServerConfiguration acServerConfiguration, EntryCarManager entryCarManager, SessionManager sessionManager, CSPServerScriptProvider scriptProvider, CSPClientMessageTypeManager cspClientMessageTypeManager, IHostApplicationLifetime applicationLifetime) : base(applicationLifetime)
     {
         Log.Information("--------------------------------------");
         Log.Information($"{PLUGIN_NAME} - Jonfinity");
@@ -117,7 +117,7 @@ public class NordschleifeTrackdayPlugin : CriticalBackgroundService, IAssettoSer
         cspClientMessageTypeManager.RegisterClientMessageType(0xDB83048A, new Action<ACTcpClient, PacketReader>(IncomingConvoyAtSecondCarousel));
 
         using var stream = new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("NordschleifeTrackdayPlugin.Lua.NordschleifeTrackdayScript.lua")!);
-        cspServerScriptProvider.AddScript(stream.ReadToEnd(), "NordschleifeTrackdayScript.lua");
+        scriptProvider.AddScript(stream.ReadToEnd(), "NordschleifeTrackdayScript.lua");
     }
 
     private void ApplicationStopping()
