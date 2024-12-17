@@ -15,10 +15,11 @@ using System.Text.Json;
 using System.Text;
 using AssettoServer.Server.GeoParams;
 using AssettoServer.Shared.Network.Packets.Incoming;
+using AssettoServer.Server.Plugin;
 
 namespace NordschleifeTrackdayPlugin;
 
-public class NordschleifeTrackdayPlugin : CriticalBackgroundService
+public class NordschleifeTrackdayPlugin : CriticalBackgroundService, IAssettoServerAutostart
 {
     public const int CONVOY_MIN_DRIVERS_NEEDED_ADMIN = 1;
     public const int CONVOY_MIN_DRIVERS_NEEDED = 2;
@@ -1042,44 +1043,89 @@ public class NordschleifeTrackdayPlugin : CriticalBackgroundService
         return _totalLapsLeaderboard;
     }
 
-    private async Task DoAnnouncementsUpdate()
+    private async Task DoAnnouncementsUpdate(CancellationToken stoppingToken)
     {
-        while (true)
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_config.Announcements.Interval));
+
+        while (!stoppingToken.IsCancellationRequested)
         {
-            long currentSessionTime = _asSessionManager.CurrentSession.SessionTimeMilliseconds;
-            if (!_warnedSessionEnd && (currentSessionTime + 360000) >= _asSessionManager.CurrentSession.TimeLeftMilliseconds)
+            try
             {
+                long currentSessionTime = _asSessionManager.CurrentSession.SessionTimeMilliseconds;
+                if (!_warnedSessionEnd && (currentSessionTime + 360000) >= _asSessionManager.CurrentSession.TimeLeftMilliseconds)
+                {
+                    _entryCarManager.BroadcastPacket(new ChatMessage
+                    {
+                        SessionId = 255,
+                        Message = $"{ANNOUNCEMENT_PREFIX}The server session ends in 6 minutes, you'll be teleported to pits shortly."
+                    });
+                    Log.Information($"{PLUGIN_PREFIX}Just warned of nearing server session end in 6 mins!");
+                    _warnedSessionEnd = true;
+                }
+
                 _entryCarManager.BroadcastPacket(new ChatMessage
                 {
                     SessionId = 255,
-                    Message = $"{ANNOUNCEMENT_PREFIX}The server session ends in 6 minutes, you'll be teleported to pits shortly."
+                    Message = $"{ANNOUNCEMENT_PREFIX}{_announcements[_currentAnnouncementIndex]}"
                 });
-                Log.Information($"{PLUGIN_PREFIX}Just warned of nearing server session end in 6 mins!");
-                _warnedSessionEnd = true;
+                _currentAnnouncementIndex = (_currentAnnouncementIndex + 1) % _announcements.Count;
+
+                await timer.WaitForNextTickAsync(stoppingToken);
             }
-
-            _entryCarManager.BroadcastPacket(new ChatMessage
+            catch (OperationCanceledException)
             {
-                SessionId = 255,
-                Message = $"{ANNOUNCEMENT_PREFIX}{_announcements[_currentAnnouncementIndex]}"
-            });
-            _currentAnnouncementIndex = (_currentAnnouncementIndex + 1) % _announcements.Count;
-            await Task.Delay(_config.Announcements.Interval * 1000);
+                break;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error during announcements update");
+            }
         }
     }
 
-    private async Task DoLeaderboardUpdate()
+    private async Task DoLeaderboardUpdate(CancellationToken stoppingToken)
     {
-        while (true)
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(1800 * 1000));
+
+        while (!stoppingToken.IsCancellationRequested)
         {
-            _pointsLeaderboard = NordschleifeTrackdayUtils.GetLeaderboard(0, _database, LEADERBOARD_MAX_ENTRIES);
-            _totalLapsLeaderboard = NordschleifeTrackdayUtils.GetLeaderboard(1, _database, LEADERBOARD_MAX_ENTRIES);
-            await Task.Delay(1800 * 1000);
+            try
+            {
+                _pointsLeaderboard = NordschleifeTrackdayUtils.GetLeaderboard(0, _database, LEADERBOARD_MAX_ENTRIES);
+                _totalLapsLeaderboard = NordschleifeTrackdayUtils.GetLeaderboard(1, _database, LEADERBOARD_MAX_ENTRIES);
+                await timer.WaitForNextTickAsync(stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error during leaderboard update");
+            }
         }
     }
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        throw new NotImplementedException();
+        try
+        {
+            // Démarrer les tâches d'arrière-plan
+            var announcementsTask = _config.Announcements.Enabled ? DoAnnouncementsUpdate(stoppingToken) : Task.CompletedTask;
+            var leaderboardTask = DoLeaderboardUpdate(stoppingToken);
+
+            // Attendre que toutes les tâches se terminent ou que le token soit annulé
+            await Task.WhenAll(announcementsTask, leaderboardTask);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error in NordschleifeTrackday plugin");
+            throw;
+        }
+    }
+
+    public Task Start(CancellationToken token)
+    {
+        return Task.CompletedTask;
     }
 }
