@@ -1117,9 +1117,4 @@ public class NordschleifeTrackdayPlugin : CriticalBackgroundService, IAssettoSer
             throw;
         }
     }
-
-    public Task Start(CancellationToken token)
-    {
-        return Task.CompletedTask;
-    }
 }
