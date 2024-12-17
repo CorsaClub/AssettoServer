@@ -8,7 +8,7 @@ namespace LogSessionPlugin;
 public class CcLogSessionConfiguration : IValidateConfiguration<LogSessionConfigurationValidator>
 {
     [YamlMember(Description = "The unique ID that will be sent as part of the API POST request")]
-    public int ServerId { get; init; }
+    public string ServerId { get; init; } = "";
     [YamlMember(Description = "Path to Crt for mTLS")]
     public string? CrtPath { get; init; }
     [YamlMember(Description = "Path to Key for mTLS")]
