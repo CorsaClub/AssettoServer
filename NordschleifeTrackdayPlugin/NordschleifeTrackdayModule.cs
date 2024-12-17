@@ -7,6 +7,9 @@ public class NordschleifeTrackdayModule : AssettoServerModule<NordschleifeTrackd
 {
     protected override void Load(ContainerBuilder builder)
     {
-        builder.RegisterType<NordschleifeTrackdayPlugin>().AsSelf().AutoActivate().SingleInstance();
+        builder.RegisterType<NordschleifeTrackdayPlugin>()
+            .AsSelf()
+            .SingleInstance()
+            .AutoActivate();
     }
 }
