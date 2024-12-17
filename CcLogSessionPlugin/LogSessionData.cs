@@ -5,7 +5,7 @@ namespace LogSessionPlugin;
 
 public class LogSessionData
 {
-    public int ServerId { get; set; }
+    public required string ServerId { get; set; }
     public required string Track { get; set; }
     public required string TrackConfig { get; set; }
     public uint? MinCSPVersion { get; set; }

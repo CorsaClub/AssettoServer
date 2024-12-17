@@ -8,6 +8,7 @@ public class LogSessionConfigurationValidator : AbstractValidator<CcLogSessionCo
 {
     public LogSessionConfigurationValidator()
     {
+        RuleFor(cfg => cfg.ServerId).NotEmpty();
         RuleFor(cfg => cfg.ApiUrlPlayerDisconnect).NotEmpty();
         RuleFor(cfg => cfg.ApiUrlSessionEnd).NotEmpty();
         RuleFor(cfg => cfg.CrtPath).NotNull().Unless(cfg => cfg.KeyPath is null);
