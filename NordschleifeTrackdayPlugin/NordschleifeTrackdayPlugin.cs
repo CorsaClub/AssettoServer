@@ -80,7 +80,6 @@ public class NordschleifeTrackdayPlugin : CriticalBackgroundService, IAssettoSer
         _config = nordschleifeTrackdayConfiguration;
         LoadFromConfig(geoParamsManager, acServerConfiguration);
         StartDatabase();
-        _ = DoLeaderboardUpdate();
         _instance = this;
 
         _acServerConfiguration = acServerConfiguration;
@@ -119,11 +118,6 @@ public class NordschleifeTrackdayPlugin : CriticalBackgroundService, IAssettoSer
 
         using var stream = new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("NordschleifeTrackdayPlugin.Lua.NordschleifeTrackdayScript.lua")!);
         cspServerScriptProvider.AddScript(stream.ReadToEnd(), "NordschleifeTrackdayScript.lua");
-
-        if (_config.Announcements.Enabled)
-        {
-            Task.Delay(120 * 1000).ContinueWith((_) => DoAnnouncementsUpdate());
-        }
     }
 
     private void ApplicationStopping()
