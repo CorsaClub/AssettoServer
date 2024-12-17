@@ -15,7 +15,6 @@ using System.Text.Json;
 using System.Text;
 using AssettoServer.Server.GeoParams;
 using AssettoServer.Shared.Network.Packets.Incoming;
-using AssettoServer.Server.UserGroup;
 
 namespace NordschleifeTrackdayPlugin;
 
@@ -71,17 +70,7 @@ public class NordschleifeTrackdayPlugin : CriticalBackgroundService
     public static int _pointsRewardBeatTb = 75;
     public static int _pointsRewardConvoy = 150;
 
-    public NordschleifeTrackdayPlugin(
-        NordschleifeTrackdayConfiguration nordschleifeTrackdayConfiguration,
-        GeoParamsManager geoParamsManager,
-        ACServerConfiguration acServerConfiguration,
-        EntryCarManager entryCarManager,
-        SessionManager sessionManager,
-        CSPServerScriptProvider cspServerScriptProvider,
-        CSPClientMessageTypeManager cspClientMessageTypeManager,
-        IHostApplicationLifetime applicationLifetime,
-        CSPServerExtraOptions cspServerExtraOptions,
-        UserGroupManager userGroupManager) : base(applicationLifetime)
+    public NordschleifeTrackdayPlugin(NordschleifeTrackdayConfiguration nordschleifeTrackdayConfiguration, GeoParamsManager geoParamsManager, ACServerConfiguration acServerConfiguration, EntryCarManager entryCarManager, SessionManager sessionManager, CSPServerScriptProvider cspServerScriptProvider, CSPClientMessageTypeManager cspClientMessageTypeManager, IHostApplicationLifetime applicationLifetime) : base(applicationLifetime)
     {
         Log.Information("--------------------------------------");
         Log.Information($"{PLUGIN_NAME} - Jonfinity");
