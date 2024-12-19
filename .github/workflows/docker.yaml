@@ -25,6 +25,7 @@ jobs:
             ewr.vultrcr.com/corsaclub/assettoserver
           tags: |
             type=semver,pattern={{version}}
+            type=sha,prefix={{branch}}-
 
       - name: Login to Vultr Container Registry
         uses: docker/login-action@v2
@@ -33,6 +34,11 @@ jobs:
           username: ${{ secrets.VULTR_REGISTRY_USERNAME }}
           password: ${{ secrets.VULTR_REGISTRY_TOKEN }}
 
-      - name: Build the Image
-        run: |
-          docker buildx bake -f docker/bake.hcl -f ${{ steps.meta.outputs.bake-file }} --push
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
