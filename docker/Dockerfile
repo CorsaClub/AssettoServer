@@ -12,6 +12,7 @@ RUN go mod download
 RUN go build -o wrapper .
 RUN chmod +x ./wrapper
 
+# -------------------------------------------------------------------------------------------------
 # Dummy since Steam doesn't support arm64
 FROM --platform=$BUILDPLATFORM scratch AS steam-arm64
 COPY docker/steamclient.not-supported /home/steam/steamcmd/linux64/
@@ -22,6 +23,7 @@ FROM --platform=$BUILDPLATFORM cm2network/steamcmd:latest AS steam-amd64
 FROM --platform=$BUILDPLATFORM steam-${TARGETARCH} AS steam
 ARG TARGETARCH
 
+# -------------------------------------------------------------------------------------------------
 # Build app
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
 ARG TARGETARCH
@@ -38,6 +40,7 @@ COPY . ./
 
 RUN dotnet publish -r $(cat ~/.RuntimeIdentifier) -c Release --no-self-contained
 
+# -------------------------------------------------------------------------------------------------
 # Build runtime image
 FROM mcr.microsoft.com/dotnet/aspnet:9.0
 
