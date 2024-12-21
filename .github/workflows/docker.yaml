@@ -4,31 +4,13 @@ name: AssettoServer [ GameServer ] - Build and Push
 # The game server container runs the actual Assetto Corsa server process
 #
 # Triggers:
-# - Manual dispatch with environment selection
-# - Push to master/staging/dev branches
-# - New version tags
-#
-# Environments:
-# - prod: For production deployment
-# - staging: For staging/testing
-# - dev: For development
+# - Tags only (v*)
+# Environment is determined by the branch where the tag is created:
+# - master branch -> prod
+# - staging branch -> staging
 
 on:
-    workflow_dispatch:
-        inputs:
-            environment:
-                description: "Environment to deploy to"
-                required: true
-                default: "staging"
-                type: choice
-                options:
-                    - prod
-                    - staging
-                    - dev
     push:
-        branches:
-            - master
-            - staging
         tags:
             - "v*"
 
@@ -36,8 +18,8 @@ jobs:
     build:
         name: Build Docker Image
         runs-on: ubuntu-latest
-        environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/master' && 'prod') || (github.ref == 'refs/heads/staging' && 'staging') || 'dev' }}
-
+        if: ${{ github.ref_base_ref != 'refs/heads/dev' }}
+        environment: ${{ github.ref_base_ref == 'refs/heads/master' && 'prod' || 'staging' }}
         steps:
             - name: Checkout Code
               uses: actions/checkout@v4
@@ -50,28 +32,18 @@ jobs:
             - name: Set image tag suffix
               id: tag_suffix
               run: |
-                  ENV="${{ github.event.inputs.environment || (github.ref == 'refs/heads/master' && 'prod') || (github.ref == 'refs/heads/staging' && 'staging') || 'dev' }}"
-                  if [ "$ENV" = "prod" ]; then
-                    echo "suffix=-prod" >> $GITHUB_OUTPUT
-                  elif [ "$ENV" = "staging" ]; then
-                    echo "suffix=-staging" >> $GITHUB_OUTPUT
-                  else
-                    echo "suffix=-dev" >> $GITHUB_OUTPUT
-                  fi
+                  ENV="${{ github.ref_base_ref == 'refs/heads/master' && 'prod' || 'staging' }}"
+                  echo "suffix=.$ENV" >> $GITHUB_OUTPUT
 
             - name: Docker meta
               id: meta
               uses: docker/metadata-action@v4
               with:
                   images: |
-                      ewr.vultrcr.com/corsaclub/docker/assetto_corsa-server
+                      ewr.vultrcr.com/corsaclub/docker/assetto_corsa-server${{ steps.tag_suffix.outputs.suffix }}
                   tags: |
-                      type=semver,pattern={{version}}${{ steps.tag_suffix.outputs.suffix }}
-                      type=sha,format=long,suffix=${{ steps.tag_suffix.outputs.suffix }}
-                  labels: |
-                      org.opencontainers.image.title=AssettoServer GameServer
-                      org.opencontainers.image.description=Assetto Corsa server
-                      maintainer=CorsaClub
+                      type=ref,event=tag
+                      type=sha,format=long
 
             - name: Login to Vultr Container Registry
               uses: docker/login-action@v2
