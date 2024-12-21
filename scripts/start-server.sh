@@ -2,10 +2,10 @@
 
 cd /app/AssettoServer
 
-# Copie le contenu de /shared-config vers /app/acServer/cfg
-echo "Copying config from /shared-config to /app/acServer/cfg..."
+# Copy config from /shared-config to /app/AssettoServer/cfg
+echo "Copying config from /shared-config to /app/AssettoServer/cfg..."
 cp /shared-config/* .
 
-# Lance le serveur Assetto Corsa
+# Start Assetto Corsa Server
 echo "Starting Assetto Corsa Server..."
 ./AssettoServer --plugins-from-workdir

@@ -42,7 +42,7 @@ jobs:
                   images: |
                       ewr.vultrcr.com/corsaclub/docker/assetto_corsa-server${{ steps.tag_suffix.outputs.suffix }}
                   tags: |
-                      type=ref,event=tag
+                      type=raw,value={{tag}}
                       type=sha,format=long
 
             - name: Login to Vultr Container Registry
@@ -61,4 +61,7 @@ jobs:
                   push: true
                   tags: ${{ steps.meta.outputs.tags }}
                   labels: ${{ steps.meta.outputs.labels }}
+                  build-args: |
+                      STEAM_USERNAME=${{ secrets.STEAM_USERNAME }}
+                      STEAM_PASSWORD=${{ secrets.STEAM_PASSWORD }}
 
