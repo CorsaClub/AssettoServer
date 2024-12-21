@@ -40,8 +40,8 @@ public class CcTimeSession : CriticalBackgroundService, IAssettoServerAutostart
 
             // Choisissez le message en fonction du temps restant.
             var message = remainingSeconds == 0
-                ? " [CorsaClub] - Fin de session"
-                : $" [CorsaClub] - Il reste {remainingSeconds / 60} minutes.";
+                ? " [CorsaClub] - End of session"
+                : $" [CorsaClub] - {remainingSeconds / 60} minutes remaining.";
 
             _entryCarManager.BroadcastPacket(new ChatMessage { SessionId = 255, Message = message });
             Log.Information("Remaining time of session : {time} minutes", remainingSeconds / 60);
@@ -67,6 +67,6 @@ public class CcTimeSession : CriticalBackgroundService, IAssettoServerAutostart
 
     private void EndSession()
     {
-        Log.Information("Fin de la session");
+        Log.Information("End of session");
     }
 }
