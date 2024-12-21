@@ -148,4 +148,9 @@ The plugin:
 - .NET 9.0
 - System.Net.Http for API communication
 - X509 certificates for mTLS (optional)
-```
+
+## Credits
+
+- [AssettoServer](https://github.com/lfs-project/AssettoServer)
+- [CorsaClub](https://github.com/CorsaClub)
+- [Stan](https://www.patreon.com/thisguyStan) Thanks to him for the development of the plugin
