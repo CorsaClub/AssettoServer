@@ -1,25 +1,45 @@
-name: AssettoServer [ GameServer ] - Build and Push
+name: AssettoServer GameServer - Build and Push
 
 # This workflow builds and pushes the main game server container image
 # The game server container runs the actual Assetto Corsa server process
 #
 # Triggers:
-# - Tags only (v*)
-# Environment is determined by the branch where the tag is created:
-# - master branch -> prod
-# - staging branch -> staging
+# - Manual dispatch with environment selection
+# - Tags
+# - Push to relevant paths
+#
+# Environments:
+# - dev: For development and testing
+# - staging: For staging deployment
+# - prod: For production deployment
 
 on:
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: "Environment to deploy to"
+                required: true
+                default: "staging"
+                type: choice
+                options:
+                    - dev
+                    - staging
+                    - prod
     push:
         tags:
             - "v*"
+        paths:
+            - "**"
+            - ".github/workflows/docker.yaml"
 
 jobs:
     build:
+        if: |
+            github.event_name == 'workflow_dispatch' ||
+            contains(github.ref, 'refs/tags/')
         name: Build Docker Image
         runs-on: ubuntu-latest
-        if: ${{ github.ref_base_ref != 'refs/heads/dev' }}
-        environment: ${{ github.ref_base_ref == 'refs/heads/master' && 'prod' || 'staging' }}
+        environment: ${{ github.event.inputs.environment || (github.base_ref == 'main' && 'prod') || 'staging' }}
         steps:
             - name: Checkout Code
               uses: actions/checkout@v4
@@ -32,18 +52,31 @@ jobs:
             - name: Set image tag suffix
               id: tag_suffix
               run: |
-                  ENV="${{ github.ref_base_ref == 'refs/heads/master' && 'prod' || 'staging' }}"
+                  # Determine environment based on base branch for tags
+                  if [[ $GITHUB_REF == refs/tags/* ]]; then
+                    BASE_BRANCH=$(git branch -r --contains $GITHUB_REF | grep -E 'origin/(main|master)' || echo "")
+                    if [[ ! -z "$BASE_BRANCH" ]]; then
+                      ENV="prod"
+                    else
+                      ENV="staging"
+                    fi
+                  else
+                    ENV="${{ github.event.inputs.environment || 'staging' }}"
+                  fi
                   echo "suffix=.$ENV" >> $GITHUB_OUTPUT
 
             - name: Docker meta
               id: meta
               uses: docker/metadata-action@v4
               with:
-                  images: |
-                      ewr.vultrcr.com/corsaclub/docker/assetto_corsa-server${{ steps.tag_suffix.outputs.suffix }}
+                  images: ewr.vultrcr.com/corsaclub/docker/assetto_corsa-server${{ steps.tag_suffix.outputs.suffix }}
                   tags: |
                       type=ref,event=tag
                       type=sha,format=long
+                  labels: |
+                      org.opencontainers.image.title=AssettoServer GameServer
+                      org.opencontainers.image.description=Main Assetto Corsa server process
+                      maintainer=CorsaClub
 
             - name: Login to Vultr Container Registry
               uses: docker/login-action@v2
