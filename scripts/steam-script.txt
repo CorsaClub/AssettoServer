@@ -1,6 +1,6 @@
 @ShutdownOnFailedCommand 1
 @sSteamCmdForcePlatformType windows
 force_install_dir ./assetto
-login CorsaConnect rumrAd-kuqxo4-zyjzim
+login ${STEAM_USERNAME} ${STEAM_PASSWORD}
 app_update 302550
 quit
