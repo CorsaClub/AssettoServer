@@ -49,7 +49,7 @@ jobs:
         permissions:
             contents: read
             packages: write
-        environment: ${{ github.event.inputs.environment || (github.base_ref == 'main' && 'prod') || 'staging' }}
+        environment: ${{ github.event.inputs.environment || (github.base_ref == 'master' && 'prod') || 'staging' }}
         steps:
             - name: Checkout Code
               uses: actions/checkout@v4
@@ -77,7 +77,7 @@ jobs:
               id: env
               run: |
                   if [[ $GITHUB_REF == refs/tags/* ]]; then
-                    if git merge-base --is-ancestor HEAD origin/main; then
+                    if git merge-base --is-ancestor HEAD origin/master; then
                       echo "env=prod" >> $GITHUB_OUTPUT
                     else
                       echo "env=staging" >> $GITHUB_OUTPUT
@@ -100,7 +100,7 @@ jobs:
               run: |
                   echo "GITHUB_REF: $GITHUB_REF"
                   echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
-                  echo "Is on main? $(git merge-base --is-ancestor HEAD origin/main && echo 'yes' || echo 'no')"
+                  echo "Is on master? $(git merge-base --is-ancestor HEAD origin/master && echo 'yes' || echo 'no')"
                   echo "Selected environment: ${{ steps.env.outputs.env }}"
                   echo "Version: ${{ steps.version.outputs.version }}"
 
