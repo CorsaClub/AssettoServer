@@ -61,7 +61,11 @@ COPY --from=agones-sdk /app/wrapper .
 
 # Copy AssettoServer and set permissions
 COPY --from=build /app/out-linux-* ./AssettoServer/
-RUN chown -R acserver:acserver /app && \
+
+# Create shared-config directory with proper permissions
+RUN mkdir -p /shared-config && \
+    chown -R acserver:acserver /app /shared-config && \
+    chmod -R 755 /app /shared-config && \
     chmod +x /app/AssettoServer/AssettoServer
 
 # Copy startup scripts
