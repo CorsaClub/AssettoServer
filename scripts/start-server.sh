@@ -10,6 +10,9 @@ cd /app/AssettoServer || exit 1
 echo "Copying config from /shared-config to /app/AssettoServer..."
 cp -rfv /shared-config/* . || echo "Warning: Could not copy config files"
 
+echo "Content of config.json:"
+cat /shared-config/config.json
+
 echo "Content of server_cfg.ini:"
 cat ./cfg/server_cfg.ini
 
