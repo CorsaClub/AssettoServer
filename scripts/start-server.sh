@@ -8,6 +8,8 @@ cd /app/acServer || exit 1
 # Copy entire config structure from /shared-config to current directory
 echo "Copying config from /shared-config to /app/acServer..."
 cp -rf /shared-config/. . || echo "Warning: Could not copy config files"
+
+echo "Setting proper permissions for the config files..."
 chmod -R 644 ./* 2>/dev/null || true
 find . -type d -exec chmod 755 {} \; 2>/dev/null || true
 
