@@ -45,6 +45,9 @@ RUN dotnet publish -r $(cat ~/.RuntimeIdentifier) -c Release --no-self-contained
 # Prepare Stage - Runtime image
 FROM mcr.microsoft.com/dotnet/aspnet:9.0
 
+# Create non-root user
+RUN groupadd -r acserver && useradd -r -g acserver -u 1000 acserver
+
 WORKDIR /app
 
 ARG STEAM_USERNAME
@@ -56,8 +59,9 @@ COPY --from=steam /home/steam/steamcmd/linux64/steamclient.* /root/.steam/sdk64/
 # Copy Agones SDK wrapper
 COPY --from=agones-sdk /app/wrapper .
 
-# Copy AssettoServer
+# Copy AssettoServer and set permissions
 COPY --from=build /app/out-linux-* ./acServer/
+RUN chown -R acserver:acserver /app
 
 # Copy startup scripts
 COPY scripts/start-server.sh .
@@ -69,6 +73,9 @@ RUN sed -i "s/\${STEAM_USERNAME}/${STEAM_USERNAME}/g" steam-script.txt && \
     sed -i "s/\${STEAM_PASSWORD}/${STEAM_PASSWORD}/g" steam-script.txt
 
 WORKDIR /data
+
+# Switch to non-root user
+USER acserver
 
 ENTRYPOINT ["/app/wrapper", "-i", "/app/start-server.sh"]
 

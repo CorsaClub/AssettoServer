@@ -1,7 +1,9 @@
 #!/bin/bash
 
-# Set proper permissions for the base directory
-chmod 755 /app/acServer
+# Ensure the acServer directory exists and has correct permissions
+mkdir -p /app/acServer
+chown -R 1000:1000 /app/acServer
+chmod -R 755 /app/acServer
 
 cd /app/acServer || exit 1
 
@@ -9,9 +11,10 @@ cd /app/acServer || exit 1
 echo "Copying config from /shared-config to /app/acServer..."
 cp -rf /shared-config/. . || echo "Warning: Could not copy config files"
 
-echo "Setting proper permissions for the config files..."
-chmod -R 644 ./* 2>/dev/null || true
-find . -type d -exec chmod 755 {} \; 2>/dev/null || true
+echo "Setting proper permissions for all files..."
+chown -R 1000:1000 .
+find . -type f -exec chmod 644 {} \;
+find . -type d -exec chmod 755 {} \;
 
 # Start Assetto Corsa Server
 echo "Starting Assetto Corsa Server..."
