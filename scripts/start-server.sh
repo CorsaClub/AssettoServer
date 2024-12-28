@@ -16,6 +16,9 @@ chown -R 1000:1000 .
 find . -type f -exec chmod 644 {} \;
 find . -type d -exec chmod 755 {} \;
 
+# Make sure the server executable is executable
+chmod +x ./AssettoServer
+
 # Start Assetto Corsa Server
 echo "Starting Assetto Corsa Server..."
 ./AssettoServer --plugins-from-workdir
