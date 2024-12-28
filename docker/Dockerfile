@@ -60,9 +60,9 @@ COPY --from=steam /home/steam/steamcmd/linux64/steamclient.* /root/.steam/sdk64/
 COPY --from=agones-sdk /app/wrapper .
 
 # Copy AssettoServer and set permissions
-COPY --from=build /app/out-linux-* ./acServer/
+COPY --from=build /app/out-linux-* ./AssettoServer/
 RUN chown -R acserver:acserver /app && \
-    chmod +x /app/acServer/AssettoServer
+    chmod +x /app/AssettoServer/AssettoServer
 
 # Copy startup scripts
 COPY scripts/start-server.sh .
