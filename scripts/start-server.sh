@@ -1,15 +1,27 @@
 #!/bin/bash
 
-# Set proper permissions for the base directory
-chmod 755 /app/acServer
+# Enable verbose mode for debugging
+set -x
 
-cd /app/acServer || exit 1
+# Ensure the AssettoServer directory exists and has correct permissions
+cd /app/AssettoServer || exit 1
 
 # Copy entire config structure from /shared-config to current directory
-echo "Copying config from /shared-config to /app/acServer..."
-cp -rf /shared-config/. . || echo "Warning: Could not copy config files"
-chmod -R 644 ./* 2>/dev/null || true
-find . -type d -exec chmod 755 {} \; 2>/dev/null || true
+echo "Copying config from /shared-config to /app/AssettoServer..."
+cp -rfv /shared-config/* . || echo "Warning: Could not copy config files"
+
+echo "Content of config.json:"
+cat /shared-config/config.json
+
+echo "Content of server_cfg.ini:"
+cat ./cfg/server_cfg.ini
+
+echo "Setting proper permissions for all files..."
+find . -type f -exec chmod 644 {} \;
+find . -type d -exec chmod 755 {} \;
+
+# Make sure the server executable is executable
+chmod +x ./AssettoServer
 
 # Start Assetto Corsa Server
 echo "Starting Assetto Corsa Server..."
