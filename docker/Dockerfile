@@ -1,15 +1,18 @@
 # Build Stage - Agones SDK wrapper
-FROM golang:1.20.4 AS agones-sdk
+FROM golang:1.22 AS agones-sdk
 
 WORKDIR /app
 ENV GO111MODULE=on
+ENV GOARCH=amd64
+ENV GOOS=linux
 
 COPY agones/go.mod .
 COPY agones/go.sum .
 COPY agones/main.go .
 
-RUN go mod download
-RUN go build -o wrapper .
+RUN go mod tidy
+RUN GOARCH=amd64 GOOS=linux go mod download
+RUN GOARCH=amd64 GOOS=linux go build -o wrapper .
 RUN chmod +x ./wrapper
 
 # -------------------------------------------------------------------------------------------------
