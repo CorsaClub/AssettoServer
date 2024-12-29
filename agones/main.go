@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -29,64 +28,91 @@ func (i *interceptor) Write(p []byte) (n int, err error) {
 }
 
 func main() {
-	input := flag.String("i", "./acServer", "Path to Assetto Corsa server executable")
-	args := flag.String("args", "--plugins-from-workdir", "Arguments for the server")
+	input := flag.String("i", "./start-server.sh", "Path to server start script")
+	args := flag.String("args", "", "Arguments for the server")
 	flag.Parse()
 
 	argsList := strings.Fields(*args)
-	fmt.Println(">>> Connecting to Agones with the SDK")
+	log.Println(">>> Connecting to Agones with the SDK")
 	s, err := sdk.NewSDK()
 	if err != nil {
 		log.Fatalf(">>> Could not connect to sdk: %v", err)
 	}
 
-	fmt.Println(">>> Starting health checking")
-	go doHealth(s)
-
+	// Démarrer le health checking
+	log.Println(">>> Starting health checking")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go doHealth(ctx, s)
 
+	// Préparer la commande
 	cmd := exec.CommandContext(ctx, *input, argsList...)
 	cmd.Stderr = &interceptor{forward: os.Stderr}
+
+	serverReady := make(chan struct{}, 1)
 	cmd.Stdout = &interceptor{
 		forward: os.Stdout,
 		intercept: func(p []byte) {
 			str := strings.TrimSpace(string(p))
-			if strings.Contains(str, "Lobby registration successful") {
-				err := s.Ready()
-				if err != nil {
-					log.Fatalf(">>> Could not send ready message")
-				}
-				fmt.Println(">>> Assetto Corsa server is ready!")
+			if strings.Contains(str, "Starting Assetto Corsa Server...") {
+				log.Println(">>> Server starting up...")
+			} else if strings.Contains(str, "Lobby registration successful") {
+				log.Println(">>> Server is ready")
+				serverReady <- struct{}{}
 			} else if strings.Contains(str, "timeleft") {
-				fmt.Println(">>> End of session. Shutting down server.")
-				err := s.Shutdown()
-				if err != nil {
-					log.Fatalf(">>> Could not send shutdown message")
+				log.Println(">>> End of session. Shutting down server.")
+				if err := s.Shutdown(); err != nil {
+					log.Printf(">>> Warning: Could not send shutdown message: %v", err)
 				}
 			}
 		}}
 
-	fmt.Printf(">>> Starting Assetto Corsa server: %s %v\n", *input, argsList)
+	log.Printf(">>> Starting server script: %s %v\n", *input, argsList)
 
-	err = cmd.Start()
-	if err != nil {
+	// Démarrer le serveur
+	if err := cmd.Start(); err != nil {
 		log.Fatalf(">>> Error Starting Cmd: %v", err)
 	}
 
+	// Gérer les signaux de terminaison
 	go handleSignals(cancel, s)
 
-	err = cmd.Wait()
-	log.Fatalf(">>> Assetto Corsa server exited unexpectedly: %v", err)
+	// Attendre que le serveur soit prêt (avec un timeout de 5 minutes)
+	select {
+	case <-serverReady:
+		log.Println(">>> Server reported ready, marking GameServer as Ready")
+		if err := s.Ready(); err != nil {
+			log.Printf(">>> Warning: Could not send ready message: %v", err)
+		}
+	case <-time.After(5 * time.Minute):
+		log.Println(">>> Timeout waiting for server to be ready")
+		if err := s.Shutdown(); err != nil {
+			log.Printf(">>> Warning: Could not send shutdown message: %v", err)
+		}
+		cancel()
+	}
+
+	// Attendre la fin du serveur
+	if err := cmd.Wait(); err != nil {
+		if err := s.Shutdown(); err != nil {
+			log.Printf(">>> Warning: Could not send shutdown message: %v", err)
+		}
+		log.Fatalf(">>> Server exited unexpectedly: %v", err)
+	}
 }
 
-func doHealth(sdk *sdk.SDK) {
+func doHealth(ctx context.Context, s *sdk.SDK) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if err := sdk.Health(); err != nil {
-			log.Printf("[wrapper] Health ping failed: %v", err)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.Health(); err != nil {
+				log.Printf(">>> Warning: Health ping failed: %v", err)
+			}
 		}
 	}
 }
@@ -95,7 +121,9 @@ func handleSignals(cancel context.CancelFunc, s *sdk.SDK) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
-	fmt.Println(">>> Received termination signal. Shutting down gracefully.")
-	s.Shutdown()
+	log.Println(">>> Received termination signal. Shutting down gracefully.")
+	if err := s.Shutdown(); err != nil {
+		log.Printf(">>> Warning: Could not send shutdown message: %v", err)
+	}
 	cancel()
 }
