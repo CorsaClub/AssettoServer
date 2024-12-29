@@ -25,4 +25,4 @@ chmod +x ./AssettoServer
 
 # Start Assetto Corsa Server
 echo "Starting Assetto Corsa Server..."
-#./AssettoServer --plugins-from-workdir
+./AssettoServer --plugins-from-workdir
