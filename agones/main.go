@@ -23,9 +23,10 @@ import (
 // It maintains thread-safe access to server metrics and status information.
 type ServerState struct {
 	sync.RWMutex
-	ready    bool      // Indicates if the server is ready to accept connections
-	players  int       // Current number of connected players
-	lastPing time.Time // Timestamp of the last successful health check
+	ready     bool      // Indicates if the server is ready to accept connections
+	players   int       // Current number of connected players
+	lastPing  time.Time // Timestamp of the last successful health check
+	allocated bool      // Indicates if the server is currently allocated
 }
 
 // interceptor implements an io.Writer that intercepts and forwards written data.
@@ -160,17 +161,41 @@ func handleServerOutput(output string, s *sdk.SDK, state *ServerState, serverRea
 		gracefulShutdown(s, cancel)
 	case strings.Contains(output, "has connected"):
 		state.Lock()
+		wasEmpty := state.players == 0
 		state.players++
 		state.Unlock()
 		updatePlayerCount(s, state.players)
+		// Allocate server when first player connects
+		if wasEmpty {
+			log.Println(">>> First player connected, allocating server")
+			if err := s.Allocate(); err != nil {
+				log.Printf(">>> Warning: Failed to allocate server: %v", err)
+			} else {
+				state.Lock()
+				state.allocated = true
+				state.Unlock()
+			}
+		}
 		log.Printf(">>> Player connected, total players: %d", state.players)
 	case strings.Contains(output, "has disconnected"):
 		state.Lock()
 		if state.players > 0 {
 			state.players--
 		}
+		wasLastPlayer := state.players == 0 && state.allocated
 		state.Unlock()
 		updatePlayerCount(s, state.players)
+		// If last player disconnected and server was allocated, mark it as ready again
+		if wasLastPlayer {
+			log.Println(">>> Last player disconnected, marking server as ready")
+			if err := s.Ready(); err != nil {
+				log.Printf(">>> Warning: Failed to mark server as ready: %v", err)
+			} else {
+				state.Lock()
+				state.allocated = false
+				state.Unlock()
+			}
+		}
 		log.Printf(">>> Player disconnected, total players: %d", state.players)
 	case strings.Contains(output, "Next session:"):
 		log.Println(">>> Session change detected")
@@ -238,8 +263,9 @@ func monitorMetrics(ctx context.Context, s *sdk.SDK, state *ServerState) {
 // updateServerAnnotations updates the Agones GameServer annotations with current state.
 func updateServerAnnotations(s *sdk.SDK, state *ServerState) {
 	annotations := map[string]string{
-		"players": fmt.Sprintf("%d", state.players),
-		"ready":   fmt.Sprintf("%v", state.ready),
+		"players":   fmt.Sprintf("%d", state.players),
+		"ready":     fmt.Sprintf("%v", state.ready),
+		"allocated": fmt.Sprintf("%v", state.allocated),
 	}
 
 	for key, value := range annotations {
