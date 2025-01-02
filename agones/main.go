@@ -156,6 +156,9 @@ func handleServerOutput(output string, s *sdk.SDK, state *ServerState, serverRea
 		state.ready = true
 		state.Unlock()
 		serverReady <- struct{}{}
+	case strings.Contains(output, "End of session"):
+		log.Println(">>> Session ended, initiating server shutdown")
+		gracefulShutdown(s, cancel)
 	case strings.Contains(output, "has connected"):
 		state.Lock()
 		wasEmpty := state.players == 0
