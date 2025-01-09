@@ -8,25 +8,235 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	sdk "agones.dev/agones/sdks/go"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+// Prometheus metrics
+var (
+	// Server identification labels
+	serverLabels = []string{"server_id", "server_name", "server_type"}
+
+	// Server state metrics
+	serverStateGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_state",
+		Help: "Current state of the server (0: Starting, 1: Ready, 2: Allocated, 3: Reserved, 4: Shutdown)",
+	}, serverLabels)
+
+	// Player metrics
+	playersGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_players_total",
+		Help: "Current number of players on the server",
+	}, serverLabels)
+
+	playerConnectCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_player_connects_total",
+		Help: "Total number of player connections since server start",
+	}, serverLabels)
+
+	playerDisconnectCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_player_disconnects_total",
+		Help: "Total number of player disconnections since server start",
+	}, serverLabels)
+
+	// Session metrics
+	sessionChangeCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_session_changes_total",
+		Help: "Total number of session changes",
+	}, serverLabels)
+
+	sessionDurationGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_session_duration_seconds",
+		Help: "Duration of the current session in seconds",
+	}, append(serverLabels, "session_type"))
+
+	sessionStartTimeGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_session_start_timestamp",
+		Help: "Start timestamp of the current session",
+	}, append(serverLabels, "session_type"))
+
+	// Server health metrics
+	lastHealthPingGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_last_health_ping_seconds",
+		Help: "Time since last successful health ping in seconds",
+	}, serverLabels)
+
+	healthPingFailuresCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_health_ping_failures_total",
+		Help: "Total number of failed health pings",
+	}, serverLabels)
+
+	// Error metrics
+	serverErrorsCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_errors_total",
+		Help: "Total number of server errors detected",
+	}, append(serverLabels, "error_type"))
+
+	// Authentication metrics
+	authSuccessCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_auth_successes_total",
+		Help: "Total number of successful Steam authentications",
+	}, serverLabels)
+
+	// Resource metrics
+	cpuUsageGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_cpu_usage_percent",
+		Help: "CPU usage percentage of the server process",
+	}, serverLabels)
+
+	memoryUsageGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_memory_usage_bytes",
+		Help: "Memory usage in bytes of the server process",
+	}, serverLabels)
+
+	// Network metrics
+	networkBytesReceivedCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_network_bytes_received_total",
+		Help: "Total number of bytes received by the server",
+	}, serverLabels)
+
+	networkBytesSentCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_network_bytes_sent_total",
+		Help: "Total number of bytes sent by the server",
+	}, serverLabels)
+
+	// Track metrics
+	trackUsageCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_track_usage_total",
+		Help: "Number of times each track has been used",
+	}, append(serverLabels, "track_name"))
+
+	// Car metrics
+	carUsageCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_car_usage_total",
+		Help: "Number of times each car has been used",
+	}, append(serverLabels, "car_name"))
+
+	// Detailed session metrics
+	sessionTypeGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_session_type",
+		Help: "Current session type (0: Practice, 1: Qualifying, 2: Race)",
+	}, serverLabels)
+
+	sessionTimeLeftGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_session_time_left_seconds",
+		Help: "Time remaining in current session in seconds",
+	}, serverLabels)
+
+	// Detailed player metrics
+	playerLatencyGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_player_latency_ms",
+		Help: "Player latency in milliseconds",
+	}, append(serverLabels, "player_name", "steam_id"))
+
+	playerBestLapGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_player_best_lap_ms",
+		Help: "Player best lap time in milliseconds",
+	}, append(serverLabels, "player_name", "steam_id", "car_model"))
+
+	// Track conditions metrics
+	trackGripGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_track_grip_level",
+		Help: "Current track grip level percentage",
+	}, serverLabels)
+
+	trackTemperatureGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_track_temperature_celsius",
+		Help: "Current track temperature in Celsius",
+	}, serverLabels)
+
+	airTemperatureGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_air_temperature_celsius",
+		Help: "Current air temperature in Celsius",
+	}, serverLabels)
+
+	// Server performance metrics
+	tickRateGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_tick_rate",
+		Help: "Current server tick rate",
+	}, serverLabels)
+
+	// Connection quality metrics
+	packetLossGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_packet_loss_percent",
+		Help: "Current packet loss percentage",
+	}, append(serverLabels, "player_name"))
+
+	// Car metrics
+	carCountGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_car_count",
+		Help: "Number of cars per model currently in use",
+	}, append(serverLabels, "car_model"))
+
+	// Event metrics
+	collisionCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_collisions_total",
+		Help: "Total number of collisions",
+	}, append(serverLabels, "severity"))
+
+	penaltyCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_penalties_total",
+		Help: "Total number of penalties given",
+	}, append(serverLabels, "type"))
+
+	// Chat metrics
+	chatMessageCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_chat_messages_total",
+		Help: "Total number of chat messages",
+	}, append(serverLabels, "type")) // type: all, admin, team, driver
+
+	// Vote metrics
+	voteCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_votes_total",
+		Help: "Total number of votes initiated",
+	}, append(serverLabels, "type", "result"))
 )
 
 // ServerState represents the current state of the Assetto Corsa server.
 // It maintains thread-safe access to server metrics and status information.
 type ServerState struct {
 	sync.RWMutex
-	ready     bool      // Indicates if the server is ready to accept connections
-	players   int       // Current number of connected players
-	lastPing  time.Time // Timestamp of the last successful health check
-	allocated bool      // Indicates if the server is currently allocated
+	ready            bool               // Indicates if the server is ready to accept connections
+	players          int                // Current number of connected players
+	lastPing         time.Time          // Timestamp of the last successful health check
+	allocated        bool               // Indicates if the server is currently allocated
+	serverID         string             // Unique identifier for the server
+	serverName       string             // Name of the server
+	serverType       string             // Type of the server (practice, race, etc.)
+	sessionType      string             // Current session type
+	sessionStart     time.Time          // Start time of current session
+	sessionTimeLeft  int                // Time left in current session (seconds)
+	currentTrack     string             // Current track name
+	currentLayout    string             // Current track layout
+	trackTemp        float64            // Track temperature
+	airTemp          float64            // Air temperature
+	trackGrip        float64            // Track grip level
+	connectedPlayers map[string]*Player // Map of connected players
+	activeCars       map[string]int     // Map of active car models and their count
+	tickRate         float64            // Current server tick rate
+}
+
+// Player structure to store per-player metrics
+type Player struct {
+	Name       string
+	SteamID    string
+	CarModel   string
+	BestLap    int64
+	LastLap    int64
+	Latency    int
+	PacketLoss float64
 }
 
 // interceptor implements an io.Writer that intercepts and forwards written data.
@@ -67,9 +277,7 @@ func main() {
 	}
 
 	// Initialize server state
-	serverState := &ServerState{
-		lastPing: time.Now(),
-	}
+	serverState := newServerState()
 
 	// Create cancellable context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -81,7 +289,7 @@ func main() {
 	go monitorMetrics(ctx, s, serverState)
 
 	// Setup initial GameServer configuration
-	if err := setupGameServer(s); err != nil {
+	if err := setupGameServer(s, serverState); err != nil {
 		log.Fatalf(">>> Failed to setup GameServer: %v", err)
 	}
 
@@ -95,7 +303,10 @@ func main() {
 	go handleSignalsWithTimeout(cancel, s, *shutdownTimeout)
 
 	// Wait for server readiness and manage lifecycle
-	manageServerLifecycle(ctx, cmd, serverReady, s, cancel, *reserveDuration)
+	manageServerLifecycle(ctx, cmd, serverReady, s, cancel, *reserveDuration, serverState)
+
+	// Initialize Prometheus metrics
+	initMetrics()
 }
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
@@ -127,7 +338,7 @@ func startServer(cmd *exec.Cmd, serverReady chan struct{}) error {
 // - Waiting for server readiness
 // - Managing server reservation
 // - Handling server exit
-func manageServerLifecycle(ctx context.Context, cmd *exec.Cmd, serverReady chan struct{}, s *sdk.SDK, cancel context.CancelFunc, reserveDuration time.Duration) {
+func manageServerLifecycle(ctx context.Context, cmd *exec.Cmd, serverReady chan struct{}, s *sdk.SDK, cancel context.CancelFunc, reserveDuration time.Duration, state *ServerState) {
 	// Wait for server readiness
 	if err := waitForServerReady(ctx, serverReady, s); err != nil {
 		log.Printf(">>> Error waiting for server ready: %v", err)
@@ -136,7 +347,7 @@ func manageServerLifecycle(ctx context.Context, cmd *exec.Cmd, serverReady chan 
 	}
 
 	// Start server reservation
-	go handleReservation(ctx, s, reserveDuration)
+	go handleReservation(ctx, s, state, reserveDuration)
 
 	// Wait for server exit
 	if err := cmd.Wait(); err != nil {
@@ -150,22 +361,28 @@ func handleServerOutput(output string, s *sdk.SDK, state *ServerState, serverRea
 	switch {
 	case strings.Contains(output, "Starting Assetto Corsa Server..."):
 		log.Println(">>> Server starting up...")
+		serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(0) // Starting state
 	case strings.Contains(output, "Lobby registration successful"):
 		log.Println(">>> Server is ready")
 		state.Lock()
 		state.ready = true
 		state.Unlock()
+		serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(1) // Ready state
 		serverReady <- struct{}{}
 	case strings.Contains(output, "End of session"):
 		log.Println(">>> Session ended, initiating server shutdown")
+		serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(4) // Shutdown state
 		gracefulShutdown(s, cancel)
 	case strings.Contains(output, "has connected"):
 		state.Lock()
 		wasEmpty := state.players == 0
 		state.players++
 		state.Unlock()
+
+		playersGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(float64(state.players))
+		playerConnectCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
 		updatePlayerCount(s, state.players)
-		// Allocate server when first player connects
+
 		if wasEmpty {
 			log.Println(">>> First player connected, allocating server")
 			if err := s.Allocate(); err != nil {
@@ -174,6 +391,7 @@ func handleServerOutput(output string, s *sdk.SDK, state *ServerState, serverRea
 				state.Lock()
 				state.allocated = true
 				state.Unlock()
+				serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(2) // Allocated state
 			}
 		}
 		log.Printf(">>> Player connected, total players: %d", state.players)
@@ -184,8 +402,11 @@ func handleServerOutput(output string, s *sdk.SDK, state *ServerState, serverRea
 		}
 		wasLastPlayer := state.players == 0 && state.allocated
 		state.Unlock()
+
+		playersGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(float64(state.players))
+		playerDisconnectCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
 		updatePlayerCount(s, state.players)
-		// If last player disconnected and server was allocated, mark it as ready again
+
 		if wasLastPlayer {
 			log.Println(">>> Last player disconnected, marking server as ready")
 			if err := s.Ready(); err != nil {
@@ -194,15 +415,19 @@ func handleServerOutput(output string, s *sdk.SDK, state *ServerState, serverRea
 				state.Lock()
 				state.allocated = false
 				state.Unlock()
+				serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(1) // Ready state
 			}
 		}
 		log.Printf(">>> Player disconnected, total players: %d", state.players)
 	case strings.Contains(output, "Next session:"):
 		log.Println(">>> Session change detected")
+		sessionChangeCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
 	case strings.Contains(output, "[ERR]"):
 		log.Printf(">>> Server Error detected: %s", output)
+		serverErrorsCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
 	case strings.Contains(output, "Steam authentication succeeded"):
 		log.Println(">>> Steam authentication successful for player")
+		authSuccessCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
 	}
 }
 
@@ -223,11 +448,16 @@ func doHealth(ctx context.Context, s *sdk.SDK, state *ServerState) {
 
 			if err := s.Health(); err != nil {
 				log.Printf(">>> Warning: Health ping failed: %v", err)
+				healthPingFailuresCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
 				// Attempt to reconnect to SDK if necessary
 				if newSDK, err := sdk.NewSDK(); err == nil {
 					s = newSDK
 				}
 			}
+
+			state.RLock()
+			lastHealthPingGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(time.Since(state.lastPing).Seconds())
+			state.RUnlock()
 		}
 	}
 }
@@ -254,6 +484,8 @@ func monitorMetrics(ctx context.Context, s *sdk.SDK, state *ServerState) {
 					time.Since(state.lastPing).Seconds())
 
 				updateServerAnnotations(s, state)
+				updateMetrics(s, state)
+				updateDetailedMetrics(s, state)
 			}
 			state.RUnlock()
 		}
@@ -277,7 +509,7 @@ func updateServerAnnotations(s *sdk.SDK, state *ServerState) {
 
 // handleReservation manages the GameServer reservation lifecycle.
 // It periodically extends the reservation to keep the server allocated.
-func handleReservation(ctx context.Context, s *sdk.SDK, duration time.Duration) {
+func handleReservation(ctx context.Context, s *sdk.SDK, state *ServerState, duration time.Duration) {
 	ticker := time.NewTicker(duration / 2)
 	defer ticker.Stop()
 
@@ -288,6 +520,8 @@ func handleReservation(ctx context.Context, s *sdk.SDK, duration time.Duration) 
 		case <-ticker.C:
 			if err := s.Reserve(duration); err != nil {
 				log.Printf(">>> Warning: Failed to reserve server: %v", err)
+			} else {
+				serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(3) // Reserved state
 			}
 		}
 	}
@@ -295,7 +529,24 @@ func handleReservation(ctx context.Context, s *sdk.SDK, duration time.Duration) 
 
 // setupGameServer initializes the GameServer configuration.
 // It sets up labels and annotations for server identification and monitoring.
-func setupGameServer(s *sdk.SDK) error {
+func setupGameServer(s *sdk.SDK, state *ServerState) error {
+	// Get server details from GameServer object
+	gameServer, err := s.GameServer()
+	if err != nil {
+		return fmt.Errorf("failed to get GameServer: %v", err)
+	}
+
+	serverID := gameServer.ObjectMeta.Name
+	serverName := gameServer.ObjectMeta.Labels["name"]
+	serverType := gameServer.ObjectMeta.Labels["type"]
+
+	// Update ServerState with server identification
+	state.Lock()
+	state.serverID = serverID
+	state.serverName = serverName
+	state.serverType = serverType
+	state.Unlock()
+
 	labels := map[string]string{
 		"game":    "assetto-corsa",
 		"version": "1.0",
@@ -390,4 +641,187 @@ func handleSignalsWithTimeout(cancel context.CancelFunc, s *sdk.SDK, timeout tim
 	defer timer.Stop()
 
 	log.Printf(">>> Shutdown sequence completed")
+}
+
+// initMetrics initializes and exposes Prometheus metrics
+func initMetrics() {
+	// Expose metrics on /metrics
+	http.Handle("/metrics", promhttp.Handler())
+	go func() {
+		if err := http.ListenAndServe(":9090", nil); err != nil {
+			log.Printf(">>> Warning: Metrics server failed: %v", err)
+		}
+	}()
+}
+
+// updateMetrics updates all Prometheus metrics with current values
+func updateMetrics(s *sdk.SDK, state *ServerState) {
+	state.RLock()
+	defer state.RUnlock()
+
+	labels := prometheus.Labels{
+		"server_id":   state.serverID,
+		"server_name": state.serverName,
+		"server_type": state.serverType,
+	}
+
+	// Update all metrics with proper labels
+	serverStateGauge.With(labels).Set(float64(getServerStateValue(state)))
+	playersGauge.With(labels).Set(float64(state.players))
+	lastHealthPingGauge.With(labels).Set(time.Since(state.lastPing).Seconds())
+
+	// Update session metrics if a session is active
+	if !state.sessionStart.IsZero() {
+		sessionLabels := prometheus.Labels{
+			"server_id":    state.serverID,
+			"server_name":  state.serverName,
+			"server_type":  state.serverType,
+			"session_type": state.sessionType,
+		}
+		sessionDurationGauge.With(sessionLabels).Set(time.Since(state.sessionStart).Seconds())
+		sessionStartTimeGauge.With(sessionLabels).Set(float64(state.sessionStart.Unix()))
+	}
+
+	// Update resource metrics (example implementation)
+	if usage, err := getProcessCPUUsage(); err == nil {
+		cpuUsageGauge.With(labels).Set(usage)
+	}
+	if usage, err := getProcessMemoryUsage(); err == nil {
+		memoryUsageGauge.With(labels).Set(float64(usage))
+	}
+}
+
+// getServerStateValue converts server state to numeric value
+func getServerStateValue(state *ServerState) int {
+	switch {
+	case !state.ready:
+		return 0 // Starting
+	case state.ready && !state.allocated:
+		return 1 // Ready
+	case state.allocated:
+		return 2 // Allocated
+	default:
+		return 0
+	}
+}
+
+// getProcessCPUUsage returns the CPU usage percentage of the current process
+func getProcessCPUUsage() (float64, error) {
+	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", os.Getpid()), "-o", "%cpu")
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get CPU usage: %v", err)
+	}
+
+	// Parse the output, skipping the header line
+	lines := strings.Split(string(output), "\n")
+	if len(lines) < 2 {
+		return 0, fmt.Errorf("unexpected ps output format")
+	}
+
+	cpu := strings.TrimSpace(lines[1])
+	cpuUsage, err := strconv.ParseFloat(cpu, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse CPU usage: %v", err)
+	}
+
+	return cpuUsage, nil
+}
+
+// getProcessMemoryUsage returns the memory usage in bytes of the current process
+func getProcessMemoryUsage() (uint64, error) {
+	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", os.Getpid()), "-o", "rss=")
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get memory usage: %v", err)
+	}
+
+	// Convert KB to bytes
+	memKB, err := strconv.ParseUint(strings.TrimSpace(string(output)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse memory usage: %v", err)
+	}
+
+	return memKB * 1024, nil
+}
+
+// updateDetailedMetrics updates all detailed Prometheus metrics
+func updateDetailedMetrics(s *sdk.SDK, state *ServerState) {
+	state.RLock()
+	defer state.RUnlock()
+
+	labels := prometheus.Labels{
+		"server_id":   state.serverID,
+		"server_name": state.serverName,
+		"server_type": state.serverType,
+	}
+
+	// Update session metrics
+	sessionTypeValue := 0
+	switch state.sessionType {
+	case "practice":
+		sessionTypeValue = 0
+	case "qualifying":
+		sessionTypeValue = 1
+	case "race":
+		sessionTypeValue = 2
+	}
+	sessionTypeGauge.With(labels).Set(float64(sessionTypeValue))
+	sessionTimeLeftGauge.With(labels).Set(float64(state.sessionTimeLeft))
+
+	// Update track condition metrics
+	trackGripGauge.With(labels).Set(state.trackGrip)
+	trackTemperatureGauge.With(labels).Set(state.trackTemp)
+	airTemperatureGauge.With(labels).Set(state.airTemp)
+	tickRateGauge.With(labels).Set(state.tickRate)
+
+	// Update per-player metrics
+	for _, player := range state.connectedPlayers {
+		playerLabels := prometheus.Labels{
+			"server_id":   state.serverID,
+			"server_name": state.serverName,
+			"server_type": state.serverType,
+			"player_name": player.Name,
+			"steam_id":    player.SteamID,
+		}
+
+		// Latency metrics
+		playerLatencyGauge.With(playerLabels).Set(float64(player.Latency))
+
+		// Packet loss metrics
+		packetLossGauge.With(playerLabels).Set(player.PacketLoss)
+
+		// Best lap metrics
+		if player.BestLap > 0 {
+			lapLabels := prometheus.Labels{
+				"server_id":   state.serverID,
+				"server_name": state.serverName,
+				"server_type": state.serverType,
+				"player_name": player.Name,
+				"steam_id":    player.SteamID,
+				"car_model":   player.CarModel,
+			}
+			playerBestLapGauge.With(lapLabels).Set(float64(player.BestLap))
+		}
+	}
+
+	// Update car count metrics
+	for model, count := range state.activeCars {
+		carLabels := prometheus.Labels{
+			"server_id":   state.serverID,
+			"server_name": state.serverName,
+			"server_type": state.serverType,
+			"car_model":   model,
+		}
+		carCountGauge.With(carLabels).Set(float64(count))
+	}
+}
+
+// Initialize maps in ServerState constructor
+func newServerState() *ServerState {
+	return &ServerState{
+		lastPing:         time.Now(),
+		connectedPlayers: make(map[string]*Player),
+		activeCars:       make(map[string]int),
+	}
 }
