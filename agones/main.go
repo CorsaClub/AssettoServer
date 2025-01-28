@@ -833,6 +833,9 @@ func newServerState() *ServerState {
 		lastPing:         time.Now(),
 		connectedPlayers: make(map[string]*Player),
 		activeCars:       make(map[string]int),
+		currentSession: &Session{
+			Type: "initializing",
+		},
 	}
 }
 
@@ -902,12 +905,17 @@ func startNewSession(state *ServerState, sessionType, track string) {
 
 // Ajouter une fonction de journalisation structurée
 func logEvent(eventType string, message string, state *ServerState) {
+	sessionType := "unknown"
+	if state.currentSession != nil {
+		sessionType = state.currentSession.Type
+	}
+
 	log.Printf("[%s] %s | Server: %s | Players: %d | Session: %s",
 		eventType,
 		message,
 		state.serverName,
 		state.players,
-		state.currentSession.Type)
+		sessionType)
 }
 
 // Ajouter des fonctions pour mieux gérer les joueurs
