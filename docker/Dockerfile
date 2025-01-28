@@ -57,9 +57,9 @@ ARG STEAM_USERNAME
 ARG STEAM_PASSWORD
 
 # Copy Steam client
-RUN mkdir -p /home/acserver/.steam/sdk64 && \
-    COPY --from=steam /home/steam/steamcmd/linux64/steamclient.so /home/acserver/.steam/sdk64/ && \
-    chown -R acserver:acserver /home/acserver/.steam
+RUN mkdir -p /home/acserver/.steam/sdk64
+COPY --from=steam /home/steam/steamcmd/linux64/steamclient.so /home/acserver/.steam/sdk64/
+RUN chown -R acserver:acserver /home/acserver/.steam
 
 # Copy Agones SDK wrapper
 COPY --from=agones-sdk /app/wrapper .
