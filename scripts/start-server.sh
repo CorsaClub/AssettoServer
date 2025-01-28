@@ -3,6 +3,12 @@
 # Enable verbose mode for debugging
 set -x
 
+# Check if steamclient.so exists
+if [ ! -f /home/acserver/.steam/sdk64/steamclient.so ]; then
+    echo "Error: steamclient.so not found!"
+    exit 1
+fi
+
 # Ensure the AssettoServer directory exists and has correct permissions
 cd /app/AssettoServer || exit 1
 

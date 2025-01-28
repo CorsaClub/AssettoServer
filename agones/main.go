@@ -202,6 +202,12 @@ var (
 		Name: "assetto_server_votes_total",
 		Help: "Total number of votes initiated",
 	}, append(serverLabels, "type", "result"))
+
+	// Ajouter des métriques réseau supplémentaires
+	networkLatencyGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_network_latency_ms",
+		Help: "Average network latency in milliseconds",
+	}, serverLabels)
 )
 
 // ServerState represents the current state of the Assetto Corsa server.
@@ -226,6 +232,7 @@ type ServerState struct {
 	connectedPlayers map[string]*Player // Map of connected players
 	activeCars       map[string]int     // Map of active car models and their count
 	tickRate         float64            // Current server tick rate
+	currentSession   *Session           // Current session
 }
 
 // Player structure to store per-player metrics
@@ -307,6 +314,12 @@ func main() {
 
 	// Initialize Prometheus metrics
 	initMetrics()
+
+	// Dans la fonction main, après l'initialisation du serveur
+	go monitorSystemResources(ctx, serverState)
+
+	// Utiliser logEvent pour les messages importants
+	logEvent("SERVER_START", "Starting Assetto Corsa Server...", serverState)
 }
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
@@ -374,60 +387,57 @@ func handleServerOutput(output string, s *sdk.SDK, state *ServerState, serverRea
 		serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(4) // Shutdown state
 		gracefulShutdown(s, cancel)
 	case strings.Contains(output, "has connected"):
-		state.Lock()
-		wasEmpty := state.players == 0
-		state.players++
-		state.Unlock()
-
-		playersGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(float64(state.players))
-		playerConnectCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
+		player := extractPlayerInfo(output)
+		addPlayer(state, player)
+		playersGauge.With(prometheus.Labels{
+			"server_id":   state.serverID,
+			"server_name": state.serverName,
+			"server_type": state.serverType,
+		}).Set(float64(state.players))
+		playerConnectCounter.With(prometheus.Labels{
+			"server_id":   state.serverID,
+			"server_name": state.serverName,
+			"server_type": state.serverType,
+		}).Inc()
 		updatePlayerCount(s, state.players)
-
-		if wasEmpty {
-			log.Println(">>> First player connected, allocating server")
-			if err := s.Allocate(); err != nil {
-				log.Printf(">>> Warning: Failed to allocate server: %v", err)
-			} else {
-				state.Lock()
-				state.allocated = true
-				state.Unlock()
-				serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(2) // Allocated state
-			}
-		}
-		log.Printf(">>> Player connected, total players: %d", state.players)
 	case strings.Contains(output, "has disconnected"):
-		state.Lock()
-		if state.players > 0 {
-			state.players--
-		}
-		wasLastPlayer := state.players == 0 && state.allocated
-		state.Unlock()
-
-		playersGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(float64(state.players))
-		playerDisconnectCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
+		steamID := extractSteamID(output)
+		removePlayer(state, steamID)
+		playersGauge.With(prometheus.Labels{
+			"server_id":   state.serverID,
+			"server_name": state.serverName,
+			"server_type": state.serverType,
+		}).Set(float64(state.players))
+		playerDisconnectCounter.With(prometheus.Labels{
+			"server_id":   state.serverID,
+			"server_name": state.serverName,
+			"server_type": state.serverType,
+		}).Inc()
 		updatePlayerCount(s, state.players)
-
-		if wasLastPlayer {
-			log.Println(">>> Last player disconnected, marking server as ready")
-			if err := s.Ready(); err != nil {
-				log.Printf(">>> Warning: Failed to mark server as ready: %v", err)
-			} else {
-				state.Lock()
-				state.allocated = false
-				state.Unlock()
-				serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(1) // Ready state
-			}
-		}
-		log.Printf(">>> Player disconnected, total players: %d", state.players)
 	case strings.Contains(output, "Next session:"):
-		log.Println(">>> Session change detected")
-		sessionChangeCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
+		logEvent("SESSION_CHANGE", "Session change detected", state)
+		sessionType := extractSessionType(output)
+		track := extractTrackName(output)
+		startNewSession(state, sessionType, track)
+		sessionChangeCounter.With(prometheus.Labels{
+			"server_id":   state.serverID,
+			"server_name": state.serverName,
+			"server_type": state.serverType,
+		}).Inc()
 	case strings.Contains(output, "[ERR]"):
-		log.Printf(">>> Server Error detected: %s", output)
-		serverErrorsCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
+		handleError(fmt.Errorf(output), "server_error", state)
 	case strings.Contains(output, "Steam authentication succeeded"):
 		log.Println(">>> Steam authentication successful for player")
 		authSuccessCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
+	case strings.Contains(output, "[S_API FAIL]"):
+		handleError(fmt.Errorf(output), "steam_api_error", state)
+		// Tentative de réinitialisation
+		go func() {
+			time.Sleep(5 * time.Second)
+			if err := s.Ready(); err != nil {
+				log.Printf(">>> Failed to reinitialize Steam connection: %v", err)
+			}
+		}()
 	}
 }
 
@@ -824,4 +834,133 @@ func newServerState() *ServerState {
 		connectedPlayers: make(map[string]*Player),
 		activeCars:       make(map[string]int),
 	}
+}
+
+// Ajouter une fonction pour surveiller les ressources système
+func monitorSystemResources(ctx context.Context, state *ServerState) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cpu, err := getProcessCPUUsage()
+			if err == nil {
+				state.Lock()
+				cpuUsageGauge.With(prometheus.Labels{
+					"server_id":   state.serverID,
+					"server_name": state.serverName,
+					"server_type": state.serverType,
+				}).Set(cpu)
+				state.Unlock()
+			}
+
+			mem, err := getProcessMemoryUsage()
+			if err == nil {
+				state.Lock()
+				memoryUsageGauge.With(prometheus.Labels{
+					"server_id":   state.serverID,
+					"server_name": state.serverName,
+					"server_type": state.serverType,
+				}).Set(float64(mem))
+				state.Unlock()
+			}
+		}
+	}
+}
+
+// Ajouter une structure et des fonctions pour mieux gérer les sessions
+type Session struct {
+	Type       string
+	StartTime  time.Time
+	EndTime    time.Time
+	Duration   time.Duration
+	Track      string
+	Conditions TrackConditions
+}
+
+type TrackConditions struct {
+	GripLevel   float64
+	Temperature float64
+	Weather     string
+	TimeOfDay   string
+}
+
+// Fonction pour démarrer une nouvelle session
+func startNewSession(state *ServerState, sessionType, track string) {
+	state.Lock()
+	defer state.Unlock()
+
+	state.currentSession = &Session{
+		Type:      sessionType,
+		StartTime: time.Now(),
+		Track:     track,
+	}
+}
+
+// Ajouter une fonction de journalisation structurée
+func logEvent(eventType string, message string, state *ServerState) {
+	log.Printf("[%s] %s | Server: %s | Players: %d | Session: %s",
+		eventType,
+		message,
+		state.serverName,
+		state.players,
+		state.currentSession.Type)
+}
+
+// Ajouter des fonctions pour mieux gérer les joueurs
+func addPlayer(state *ServerState, player Player) {
+	state.Lock()
+	defer state.Unlock()
+
+	state.connectedPlayers[player.SteamID] = &player
+	state.players++
+}
+
+func removePlayer(state *ServerState, steamID string) {
+	state.Lock()
+	defer state.Unlock()
+
+	delete(state.connectedPlayers, steamID)
+	if state.players > 0 {
+		state.players--
+	}
+}
+
+// Ajouter une fonction pour gérer les erreurs de manière centralisée
+func handleError(err error, errorType string, state *ServerState) {
+	log.Printf(">>> Error (%s): %v", errorType, err)
+	serverErrorsCounter.With(prometheus.Labels{
+		"server_id":   state.serverID,
+		"server_name": state.serverName,
+		"server_type": state.serverType,
+		"error_type":  errorType,
+	}).Inc()
+}
+
+// Fonctions pour extraire les informations des logs
+func extractSessionType(output string) string {
+	// Implémentation pour extraire le type de session
+	return "practice" // Exemple
+}
+
+func extractTrackName(output string) string {
+	// Implémentation pour extraire le nom de la piste
+	return "monza" // Exemple
+}
+
+func extractPlayerInfo(output string) Player {
+	// Implémentation pour extraire les informations du joueur
+	return Player{
+		Name:     "Player1",
+		SteamID:  "123456789",
+		CarModel: "ks_corvette_c7",
+	}
+}
+
+func extractSteamID(output string) string {
+	// Implémentation pour extraire le SteamID
+	return "123456789"
 }
