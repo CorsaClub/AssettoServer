@@ -487,6 +487,7 @@ func monitorMetrics(ctx context.Context, s *sdk.SDK, state *ServerState) {
 			if gameServer, err := s.GameServer(); err != nil {
 				log.Printf(">>> Warning: Failed to get GameServer status: %v", err)
 			} else {
+				monitorGameServerState(gameServer)
 				log.Printf(">>> GameServer Status: %v, Players: %d, Ready: %v, Last Ping: %v",
 					gameServer.Status.State,
 					state.players,
@@ -520,19 +521,17 @@ func updateServerAnnotations(s *sdk.SDK, state *ServerState) {
 // handleReservation manages the GameServer reservation lifecycle.
 // It periodically extends the reservation to keep the server allocated.
 func handleReservation(ctx context.Context, s *sdk.SDK, state *ServerState, duration time.Duration) {
-	ticker := time.NewTicker(duration / 2)
-	defer ticker.Stop()
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := s.Reserve(duration); err != nil {
-				log.Printf(">>> Warning: Failed to reserve server: %v", err)
-			} else {
-				serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(3) // Reserved state
-			}
+	select {
+	case <-ctx.Done():
+		log.Println(">>> Reservation cancelled due to context cancellation")
+		return
+	case <-timer.C:
+		log.Printf(">>> Reservation duration (%v) expired", duration)
+		if err := s.Shutdown(); err != nil {
+			log.Printf(">>> Failed to initiate shutdown after reservation: %v", err)
 		}
 	}
 }
@@ -640,17 +639,31 @@ func updatePlayerCount(s *sdk.SDK, count int) {
 // handleSignalsWithTimeout sets up signal handling for graceful shutdown.
 // It waits for termination signals and initiates the shutdown process.
 func handleSignalsWithTimeout(cancel context.CancelFunc, s *sdk.SDK, timeout time.Duration) {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	<-c
-	log.Println(">>> Received termination signal. Starting graceful shutdown.")
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
-	gracefulShutdown(s, cancel)
+	sig := <-sigChan
+	log.Printf(">>> Received signal %v from %s. Starting graceful shutdown.", sig, getSignalSource())
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	// Informer Agones que nous commençons l'arrêt
+	if err := s.Shutdown(); err != nil {
+		log.Printf(">>> Failed to notify Agones of shutdown: %v", err)
+	}
 
-	log.Printf(">>> Shutdown sequence completed")
+	// Déclencher l'arrêt gracieux
+	cancel()
+
+	// Attendre le timeout
+	time.Sleep(timeout)
+	log.Println(">>> Shutdown sequence completed")
+}
+
+// Fonction helper pour identifier la source du signal
+func getSignalSource() string {
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		return "Kubernetes"
+	}
+	return "Unknown"
 }
 
 // initMetrics initializes and exposes Prometheus metrics
@@ -971,4 +984,9 @@ func extractPlayerInfo(output string) Player {
 func extractSteamID(output string) string {
 	// Implémentation pour extraire le SteamID
 	return "123456789"
+}
+
+// Modifier la fonction monitorGameServerState pour éviter l'utilisation directe du type GameServer
+func monitorGameServerState(gameServer interface{}) {
+	log.Printf(">>> GameServer Details: %+v", gameServer)
 }
