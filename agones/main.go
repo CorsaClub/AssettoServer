@@ -307,7 +307,7 @@ func main() {
 	}
 
 	// Handle termination signals
-	go handleSignalsWithTimeout(cancel, s, *shutdownTimeout)
+	go handleSignalsWithTimeout(cancel, s, serverState, *shutdownTimeout)
 
 	// Wait for server readiness and manage lifecycle
 	manageServerLifecycle(ctx, cmd, serverReady, s, cancel, *reserveDuration, serverState)
@@ -355,7 +355,7 @@ func manageServerLifecycle(ctx context.Context, cmd *exec.Cmd, serverReady chan 
 	// Wait for server readiness
 	if err := waitForServerReady(ctx, serverReady, s); err != nil {
 		log.Printf(">>> Error waiting for server ready: %v", err)
-		gracefulShutdown(s, cancel)
+		gracefulShutdown(s, cancel, state)
 		return
 	}
 
@@ -364,7 +364,7 @@ func manageServerLifecycle(ctx context.Context, cmd *exec.Cmd, serverReady chan 
 
 	// Wait for server exit
 	if err := cmd.Wait(); err != nil {
-		handleServerExit(ctx, err, s, cancel)
+		handleServerExit(ctx, err, s, cancel, state)
 	}
 }
 
@@ -385,7 +385,7 @@ func handleServerOutput(output string, s *sdk.SDK, state *ServerState, serverRea
 	case strings.Contains(output, "End of session"):
 		log.Println(">>> Session ended, initiating server shutdown")
 		serverStateGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(4) // Shutdown state
-		gracefulShutdown(s, cancel)
+		gracefulShutdown(s, cancel, state)
 	case strings.Contains(output, "has connected"):
 		player := extractPlayerInfo(output)
 		addPlayer(state, player)
@@ -464,7 +464,7 @@ func doHealth(ctx context.Context, s *sdk.SDK, state *ServerState, cancel contex
 
 				if consecutiveFailures > 3 {
 					log.Printf(">>> Critical health check failure count reached: %d", consecutiveFailures)
-					gracefulShutdown(s, cancel)
+					gracefulShutdown(s, cancel, state)
 					return
 				}
 
@@ -623,18 +623,18 @@ func waitForServerReady(ctx context.Context, serverReady chan struct{}, s *sdk.S
 
 // handleServerExit processes server termination events.
 // It determines if the exit was expected and initiates appropriate shutdown procedures.
-func handleServerExit(ctx context.Context, err error, s *sdk.SDK, cancel context.CancelFunc) {
+func handleServerExit(ctx context.Context, err error, s *sdk.SDK, cancel context.CancelFunc, state *ServerState) {
 	if ctx.Err() == context.Canceled {
 		log.Println(">>> Server shutdown completed")
 	} else {
 		log.Printf(">>> Server exited unexpectedly: %v", err)
-		gracefulShutdown(s, cancel)
+		gracefulShutdown(s, cancel, state)
 	}
 }
 
 // gracefulShutdown performs a clean shutdown of the server.
 // It notifies Agones of the shutdown and cancels the context.
-func gracefulShutdown(s *sdk.SDK, cancel context.CancelFunc) {
+func gracefulShutdown(s *sdk.SDK, cancel context.CancelFunc, state *ServerState) {
 	if !validateShutdownConditions(s, state) {
 		log.Println(">>> Shutdown aborted due to validation failure")
 		return
@@ -662,7 +662,7 @@ func updatePlayerCount(s *sdk.SDK, count int) {
 
 // handleSignalsWithTimeout sets up signal handling for graceful shutdown.
 // It waits for termination signals and initiates the shutdown process.
-func handleSignalsWithTimeout(cancel context.CancelFunc, s *sdk.SDK, timeout time.Duration) {
+func handleSignalsWithTimeout(cancel context.CancelFunc, s *sdk.SDK, state *ServerState, timeout time.Duration) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
@@ -676,8 +676,8 @@ func handleSignalsWithTimeout(cancel context.CancelFunc, s *sdk.SDK, timeout tim
 
 	// Add pre-shutdown checks
 	log.Println(">>> Pre-shutdown checks:")
-	log.Printf(">>> - Current players: %d", getCurrentPlayerCount())
-	log.Printf(">>> - Active sessions: %d", getActiveSessionCount())
+	log.Printf(">>> - Current players: %d", getCurrentPlayerCount(state))
+	log.Printf(">>> - Active sessions: %d", getActiveSessionCount(state))
 	log.Printf(">>> - Last health check: %s", time.Since(lastHealthCheckTime))
 
 	// Modify shutdown sequence to handle Agones SDK properly
@@ -1063,3 +1063,19 @@ func checkNetworkConnectivity() {
 	// Implement network connectivity checks
 	log.Println(">>> Checking network connectivity...")
 }
+
+// Update helper functions to accept state parameter
+func getCurrentPlayerCount(state *ServerState) int {
+	state.RLock()
+	defer state.RUnlock()
+	return state.players
+}
+
+func getActiveSessionCount(state *ServerState) int {
+	if state.currentSession != nil {
+		return 1
+	}
+	return 0
+}
+
+var lastHealthCheckTime = time.Now() // Add this global variable
