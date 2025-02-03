@@ -54,10 +54,14 @@ WORKDIR /app
 ARG STEAM_USERNAME
 ARG STEAM_PASSWORD
 
-# Create steam directory and copy client
-RUN mkdir -p /home/acserver/.steam/sdk64 && \
-    cp --from=steam /home/steam/steamcmd/linux64/steamclient.* /home/acserver/.steam/sdk64/ && \
-    chown -R acserver:acserver /home/acserver
+# Create steam directory
+RUN mkdir -p /home/acserver/.steam/sdk64
+
+# Copy steam client from steam stage
+COPY --from=steam /home/steam/steamcmd/linux64/steamclient.* /home/acserver/.steam/sdk64/
+
+# Set proper permissions
+RUN chown -R acserver:acserver /home/acserver
 
 # Copy Agones SDK wrapper
 COPY --from=agones-sdk /app/wrapper .
