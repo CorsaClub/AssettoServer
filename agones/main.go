@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -353,6 +354,37 @@ func main() {
 		// All checks passed
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
+	})
+
+	// Add readiness endpoint
+	healthMux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		serverState.RLock()
+		defer serverState.RUnlock()
+
+		// Check if server is fully ready
+		if serverState.ready && !serverState.shuttingDown {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Ready"))
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("Not Ready"))
+		}
+	})
+
+	// Add status endpoint for debugging
+	healthMux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		serverState.RLock()
+		defer serverState.RUnlock()
+
+		status := map[string]interface{}{
+			"ready":        serverState.ready,
+			"players":      serverState.players,
+			"lastPing":     time.Since(serverState.lastPing).String(),
+			"shuttingDown": serverState.shuttingDown,
+			"sessionType":  serverState.sessionType,
+		}
+
+		json.NewEncoder(w).Encode(status)
 	})
 
 	// Start HTTP server for health checks on a separate port
