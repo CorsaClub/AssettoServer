@@ -233,6 +233,7 @@ type ServerState struct {
 	activeCars       map[string]int     // Map of active car models and their count
 	tickRate         float64            // Current server tick rate
 	currentSession   *Session           // Current session
+	shuttingDown     bool               // Indicates if the server is shutting down
 }
 
 // Player structure to store per-player metrics
@@ -320,6 +321,53 @@ func main() {
 
 	// Utiliser logEvent pour les messages importants
 	logEvent("SERVER_START", "Starting Assetto Corsa Server...", serverState)
+
+	// Create a separate mux for health checks
+	healthMux := http.NewServeMux()
+
+	// Add HTTP health endpoint
+	healthMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		serverState.RLock()
+		defer serverState.RUnlock()
+
+		// Check multiple health conditions
+		conditions := []struct {
+			check bool
+			msg   string
+		}{
+			{serverState.ready, "Server not ready"},
+			{time.Since(serverState.lastPing) < 5*time.Second, "Health check timeout"},
+			{!serverState.shuttingDown, "Server is shutting down"},
+		}
+
+		// Check all conditions
+		for _, condition := range conditions {
+			if !condition.check {
+				log.Printf(">>> Health check failed: %s", condition.msg)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte(condition.msg))
+				return
+			}
+		}
+
+		// All checks passed
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	// Start HTTP server for health checks on a separate port
+	go func() {
+		server := &http.Server{
+			Addr:         ":9001",
+			Handler:      healthMux,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 5 * time.Second,
+		}
+
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf(">>> HTTP health server error: %v", err)
+		}
+	}()
 }
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
@@ -447,8 +495,6 @@ func doHealth(ctx context.Context, s *sdk.SDK, state *ServerState, cancel contex
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	consecutiveFailures := 0
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -459,34 +505,36 @@ func doHealth(ctx context.Context, s *sdk.SDK, state *ServerState, cancel contex
 			state.Unlock()
 
 			if err := s.Health(); err != nil {
-				log.Printf(">>> Health check failed: %v", err)
-				consecutiveFailures++
-
-				if consecutiveFailures > 3 {
-					log.Printf(">>> Critical health check failure count reached: %d", consecutiveFailures)
-					gracefulShutdown(s, cancel, state)
-					return
+				log.Printf(">>> Agones health check failed: %v", err)
+				// Add more detailed error logging
+				if gameServer, gsErr := s.GameServer(); gsErr == nil {
+					log.Printf(">>> GameServer state during health failure: %v", gameServer.Status.State)
 				}
 
-				// Add detailed system checks
-				checkSystemResources()
-				checkNetworkConnectivity()
-
-				// Attempt to reconnect to SDK
-				if newSDK, err := sdk.NewSDK(); err == nil {
-					s = newSDK
-					log.Println(">>> Successfully reconnected to Agones SDK")
-				}
-
-				continue
+				// Add system diagnostics before shutdown
+				log.Printf(">>> System state - Players: %d, Ready: %v", getCurrentPlayerCount(state), state.ready)
+				gracefulShutdown(s, cancel, state)
+				return
 			}
-
-			consecutiveFailures = 0 // Reset counter on success
 
 			// Update health metrics
 			state.RLock()
-			lastHealthPingGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(time.Since(state.lastPing).Seconds())
+			lastHealthPingGauge.With(prometheus.Labels{
+				"server_id":   state.serverID,
+				"server_name": state.serverName,
+				"server_type": state.serverType,
+			}).Set(time.Since(state.lastPing).Seconds())
 			state.RUnlock()
+
+			// Log health status periodically
+			if time.Now().Second()%30 == 0 {
+				state.RLock()
+				log.Printf(">>> Health status: Ready=%v, LastPing=%v ago, ShuttingDown=%v",
+					state.ready,
+					time.Since(state.lastPing),
+					state.shuttingDown)
+				state.RUnlock()
+			}
 		}
 	}
 }
@@ -667,7 +715,7 @@ func handleSignalsWithTimeout(cancel context.CancelFunc, s *sdk.SDK, state *Serv
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
 	sig := <-sigChan
-	log.Printf(">>> Received signal %v from %s. Starting graceful shutdown.", sig, getSignalSource())
+	log.Printf(">>> Received signal %v. Starting graceful shutdown.", sig)
 
 	// Add debug information about current server state
 	if gameServer, err := s.GameServer(); err == nil {
@@ -675,28 +723,30 @@ func handleSignalsWithTimeout(cancel context.CancelFunc, s *sdk.SDK, state *Serv
 	}
 
 	// Add pre-shutdown checks
-	log.Println(">>> Pre-shutdown checks:")
+	log.Printf(">>> Pre-shutdown checks:")
 	log.Printf(">>> - Current players: %d", getCurrentPlayerCount(state))
 	log.Printf(">>> - Active sessions: %d", getActiveSessionCount(state))
-	log.Printf(">>> - Last health check: %s", time.Since(lastHealthCheckTime))
+	log.Printf(">>> - Last health check: %s", time.Since(state.lastPing))
 
-	// Modify shutdown sequence to handle Agones SDK properly
-	go func() {
-		if err := s.Shutdown(); err != nil {
-			log.Printf(">>> Failed to notify Agones of shutdown: %v", err)
-		}
+	state.Lock()
+	state.shuttingDown = true
+	state.Unlock()
 
-		// Wait for player disconnections
-		time.Sleep(5 * time.Second)
-		cancel()
-	}()
+	// Notify Agones of shutdown
+	if err := s.Shutdown(); err != nil {
+		log.Printf(">>> Failed to notify Agones of shutdown: %v", err)
+	}
 
-	// Add final timeout with more debugging
+	// Wait for connections to drain
+	time.Sleep(5 * time.Second)
+	cancel()
+
+	// Add final timeout
 	select {
 	case <-time.After(timeout):
-		log.Println(">>> Shutdown timeout reached, forcing exit")
+		log.Println(">>> Shutdown timeout reached")
 	case <-context.Background().Done():
-		log.Println(">>> Shutdown completed before timeout")
+		log.Println(">>> Shutdown completed")
 	}
 }
 
