@@ -16,16 +16,14 @@ RUN GOARCH=amd64 GOOS=linux go build -o wrapper .
 RUN chmod +x ./wrapper
 
 # -------------------------------------------------------------------------------------------------
-# Steam Stage [arm64] - Dummy since Steam doesn't support arm64
+# Steam Stage Handling
+ARG TARGETARCH
+
+FROM --platform=$BUILDPLATFORM cm2network/steamcmd:latest AS steam-amd64
 FROM --platform=$BUILDPLATFORM scratch AS steam-arm64
 COPY docker/steamclient.not-supported /home/steam/steamcmd/linux64/
 
-# -------------------------------------------------------------------------------------------------
-# Steam Stage [amd64] - Download Steam client
-FROM --platform=$BUILDPLATFORM cm2network/steamcmd:latest AS steam-amd64
-
-FROM --platform=$BUILDPLATFORM steam-${TARGETARCH} AS steam
-ARG TARGETARCH
+FROM steam-${TARGETARCH} AS steam
 
 # -------------------------------------------------------------------------------------------------
 # Build Stage - Build AssettoServer
@@ -57,8 +55,9 @@ ARG STEAM_USERNAME
 ARG STEAM_PASSWORD
 
 # Create steam directory and copy client
-RUN mkdir -p /home/acserver/.steam/sdk64
-COPY --from=steam --chown=acserver:acserver /home/steam/steamcmd/linux64/steamclient.so /home/acserver/.steam/sdk64/
+RUN mkdir -p /home/acserver/.steam/sdk64 && \
+    cp --from=steam /home/steam/steamcmd/linux64/steamclient.* /home/acserver/.steam/sdk64/ && \
+    chown -R acserver:acserver /home/acserver
 
 # Copy Agones SDK wrapper
 COPY --from=agones-sdk /app/wrapper .

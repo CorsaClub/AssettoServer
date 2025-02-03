@@ -614,7 +614,7 @@ func waitForServerReady(ctx context.Context, serverReady chan struct{}, s *sdk.S
 			return fmt.Errorf("could not send ready message: %v", err)
 		}
 		return nil
-	case <-time.After(2 * time.Minute):
+	case <-time.After(5 * time.Minute):
 		return fmt.Errorf("timeout waiting for server to be ready")
 	case <-ctx.Done():
 		return fmt.Errorf("context cancelled while waiting for server")
