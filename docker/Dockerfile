@@ -57,9 +57,9 @@ ARG STEAM_USERNAME
 ARG STEAM_PASSWORD
 
 # Copy Steam client
-RUN mkdir -p /home/acserver/.steam/sdk64
-COPY --from=steam /home/steam/steamcmd/linux64/steamclient.so /home/acserver/.steam/sdk64/
-RUN chown -R acserver:acserver /home/acserver/.steam
+RUN mkdir -p /home/acserver/.steam/sdk64 && \
+    cp --from=steam /home/steam/steamcmd/linux64/steamclient.so /home/acserver/.steam/sdk64/ && \
+    chown -R acserver:acserver /home/acserver/.steam
 
 # Copy Agones SDK wrapper
 COPY --from=agones-sdk /app/wrapper .
@@ -83,6 +83,11 @@ RUN sed -i "s/\${STEAM_USERNAME}/${STEAM_USERNAME}/g" steam-script.txt && \
     sed -i "s/\${STEAM_PASSWORD}/${STEAM_PASSWORD}/g" steam-script.txt
 
 WORKDIR /data
+
+# Add steamclient.so fallback location
+RUN mkdir -p /app/AssettoServer/ && \
+    cp /home/acserver/.steam/sdk64/steamclient.so /app/AssettoServer/ && \
+    chmod +x /app/AssettoServer/steamclient.so
 
 # Switch to non-root user
 USER acserver

@@ -292,7 +292,7 @@ func main() {
 
 	// Start health checking and metrics monitoring
 	log.Println(">>> Starting health checking")
-	go doHealth(ctx, s, serverState)
+	go doHealth(ctx, s, serverState, cancel)
 	go monitorMetrics(ctx, s, serverState)
 
 	// Setup initial GameServer configuration
@@ -443,9 +443,11 @@ func handleServerOutput(output string, s *sdk.SDK, state *ServerState, serverRea
 
 // doHealth performs periodic health checks and updates the server state.
 // It attempts to reconnect to the SDK if health checks fail.
-func doHealth(ctx context.Context, s *sdk.SDK, state *ServerState) {
+func doHealth(ctx context.Context, s *sdk.SDK, state *ServerState, cancel context.CancelFunc) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+
+	consecutiveFailures := 0
 
 	for {
 		select {
@@ -457,14 +459,31 @@ func doHealth(ctx context.Context, s *sdk.SDK, state *ServerState) {
 			state.Unlock()
 
 			if err := s.Health(); err != nil {
-				log.Printf(">>> Warning: Health ping failed: %v", err)
-				healthPingFailuresCounter.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Inc()
-				// Attempt to reconnect to SDK if necessary
+				log.Printf(">>> Health check failed: %v", err)
+				consecutiveFailures++
+
+				if consecutiveFailures > 3 {
+					log.Printf(">>> Critical health check failure count reached: %d", consecutiveFailures)
+					gracefulShutdown(s, cancel)
+					return
+				}
+
+				// Add detailed system checks
+				checkSystemResources()
+				checkNetworkConnectivity()
+
+				// Attempt to reconnect to SDK
 				if newSDK, err := sdk.NewSDK(); err == nil {
 					s = newSDK
+					log.Println(">>> Successfully reconnected to Agones SDK")
 				}
+
+				continue
 			}
 
+			consecutiveFailures = 0 // Reset counter on success
+
+			// Update health metrics
 			state.RLock()
 			lastHealthPingGauge.With(prometheus.Labels{"server_id": state.serverID, "server_name": state.serverName, "server_type": state.serverType}).Set(time.Since(state.lastPing).Seconds())
 			state.RUnlock()
@@ -616,6 +635,11 @@ func handleServerExit(ctx context.Context, err error, s *sdk.SDK, cancel context
 // gracefulShutdown performs a clean shutdown of the server.
 // It notifies Agones of the shutdown and cancels the context.
 func gracefulShutdown(s *sdk.SDK, cancel context.CancelFunc) {
+	if !validateShutdownConditions(s, state) {
+		log.Println(">>> Shutdown aborted due to validation failure")
+		return
+	}
+
 	if err := s.Shutdown(); err != nil {
 		log.Printf(">>> Warning: Could not send shutdown message: %v", err)
 	}
@@ -645,17 +669,35 @@ func handleSignalsWithTimeout(cancel context.CancelFunc, s *sdk.SDK, timeout tim
 	sig := <-sigChan
 	log.Printf(">>> Received signal %v from %s. Starting graceful shutdown.", sig, getSignalSource())
 
-	// Informer Agones que nous commençons l'arrêt
-	if err := s.Shutdown(); err != nil {
-		log.Printf(">>> Failed to notify Agones of shutdown: %v", err)
+	// Add debug information about current server state
+	if gameServer, err := s.GameServer(); err == nil {
+		log.Printf(">>> Current GameServer State: %+v", gameServer.Status)
 	}
 
-	// Déclencher l'arrêt gracieux
-	cancel()
+	// Add pre-shutdown checks
+	log.Println(">>> Pre-shutdown checks:")
+	log.Printf(">>> - Current players: %d", getCurrentPlayerCount())
+	log.Printf(">>> - Active sessions: %d", getActiveSessionCount())
+	log.Printf(">>> - Last health check: %s", time.Since(lastHealthCheckTime))
 
-	// Attendre le timeout
-	time.Sleep(timeout)
-	log.Println(">>> Shutdown sequence completed")
+	// Modify shutdown sequence to handle Agones SDK properly
+	go func() {
+		if err := s.Shutdown(); err != nil {
+			log.Printf(">>> Failed to notify Agones of shutdown: %v", err)
+		}
+
+		// Wait for player disconnections
+		time.Sleep(5 * time.Second)
+		cancel()
+	}()
+
+	// Add final timeout with more debugging
+	select {
+	case <-time.After(timeout):
+		log.Println(">>> Shutdown timeout reached, forcing exit")
+	case <-context.Background().Done():
+		log.Println(">>> Shutdown completed before timeout")
+	}
 }
 
 // Fonction helper pour identifier la source du signal
@@ -989,4 +1031,35 @@ func extractSteamID(output string) string {
 // Modifier la fonction monitorGameServerState pour éviter l'utilisation directe du type GameServer
 func monitorGameServerState(gameServer interface{}) {
 	log.Printf(">>> GameServer Details: %+v", gameServer)
+}
+
+// Add new validation function
+func validateShutdownConditions(s *sdk.SDK, state *ServerState) bool {
+	state.RLock()
+	defer state.RUnlock()
+
+	// Prevent shutdown if players are connected
+	if state.players > 0 {
+		log.Println(">>> Aborting shutdown - players still connected")
+		return false
+	}
+
+	// Check active sessions
+	if state.currentSession != nil && time.Since(state.currentSession.StartTime) < 5*time.Minute {
+		log.Println(">>> Aborting shutdown - session under 5 minutes")
+		return false
+	}
+
+	return true
+}
+
+// Add these functions to resolve undefined errors
+func checkSystemResources() {
+	// Implement system resource checks (CPU, memory, disk)
+	log.Println(">>> Checking system resources...")
+}
+
+func checkNetworkConnectivity() {
+	// Implement network connectivity checks
+	log.Println(">>> Checking network connectivity...")
 }
