@@ -5,6 +5,7 @@ go 1.21
 require (
 	agones.dev/agones v1.35.0
 	github.com/prometheus/client_golang v1.17.0
+	golang.org/x/time v0.5.0
 )
 
 require (
