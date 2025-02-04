@@ -80,6 +80,22 @@ func HandleServerOutput(output string, s *sdk.SDK, state *types.ServerState, ser
 		handleAISlotUpdate(output, state, baseLabels)
 	case strings.Contains(output, "Added checksum"):
 		handleChecksumUpdate(output, state, baseLabels)
+	case strings.Contains(output, "Server invite link:"):
+		handleServerInvite(output, state, baseLabels)
+	case strings.Contains(output, "Switching session to id"):
+		handleSessionSwitch(output, state, baseLabels)
+	case strings.Contains(output, "Starting TCP server"):
+		handleTCPServer(output, state, baseLabels)
+	case strings.Contains(output, "Starting UDP server"):
+		handleUDPServer(output, state, baseLabels)
+	case strings.Contains(output, "Remaining time of session"):
+		handleSessionTime(output, state, baseLabels)
+	case strings.Contains(output, "Registering server to lobby"):
+		handleLobbyRegistration(output, state, baseLabels)
+	case strings.Contains(output, "Starting update loop"):
+		handleUpdateLoop(output, state, baseLabels)
+	case strings.Contains(output, "Lobby registration successful"):
+		handleLobbySuccess(output, state, baseLabels)
 	default:
 		log.Printf(">>> Unhandled server output: %s", output)
 	}
@@ -271,7 +287,12 @@ func handleServerVersion(output string, state *types.ServerState, labels prometh
 func handleConfigLoading(output string, state *types.ServerState, labels prometheus.Labels) {
 	configFile := extractConfigFile(output)
 	log.Printf(">>> Loading config: %s", configFile)
-	metrics.ServerErrorsCounter.With(labels).Inc()
+	metrics.ServerErrorsCounter.With(prometheus.Labels{
+		"server_id":   state.ServerID,
+		"server_name": state.ServerName,
+		"server_type": state.ServerType,
+		"error_type":  "config_loading",
+	}).Inc()
 }
 
 // handlePluginLoading handles server plugin loading-related events and updates metrics accordingly.
@@ -326,4 +347,51 @@ func extractAISlots(output string) map[string]int {
 func extractChecksumAsset(output string) string {
 	// Extraire le nom de l'asset dont le checksum est mis à jour
 	return strings.TrimSpace(strings.Split(output, "Added checksum for")[1])
+}
+
+// handleServerInvite handles server invite-related events and updates metrics accordingly.
+func handleServerInvite(output string, state *types.ServerState, labels prometheus.Labels) {
+	log.Printf(">>> Server invite URL available")
+}
+
+// handleSessionSwitch handles session switch-related events and updates metrics accordingly.
+func handleSessionSwitch(output string, state *types.ServerState, labels prometheus.Labels) {
+	sessionID := extractSessionID(output)
+	log.Printf(">>> Switching to session ID: %s", sessionID)
+}
+
+// handleTCPServer handles TCP server-related events and updates metrics accordingly.
+func handleTCPServer(output string, state *types.ServerState, labels prometheus.Labels) {
+	// Implementation needed
+}
+
+// handleUDPServer handles UDP server-related events and updates metrics accordingly.
+func handleUDPServer(output string, state *types.ServerState, labels prometheus.Labels) {
+	// Implementation needed
+}
+
+// handleSessionTime handles session time-related events and updates metrics accordingly.
+func handleSessionTime(output string, state *types.ServerState, labels prometheus.Labels) {
+	// Implementation needed
+}
+
+// handleLobbyRegistration handles lobby registration-related events and updates metrics accordingly.
+func handleLobbyRegistration(output string, state *types.ServerState, labels prometheus.Labels) {
+	// Implementation needed
+}
+
+// handleUpdateLoop handles update loop-related events and updates metrics accordingly.
+func handleUpdateLoop(output string, state *types.ServerState, labels prometheus.Labels) {
+	// Implementation needed
+}
+
+// handleLobbySuccess handles lobby success-related events and updates metrics accordingly.
+func handleLobbySuccess(output string, state *types.ServerState, labels prometheus.Labels) {
+	// Implementation needed
+}
+
+// extractSessionID extracts the session ID from the output string.
+func extractSessionID(output string) string {
+	// Implementation needed
+	return ""
 }

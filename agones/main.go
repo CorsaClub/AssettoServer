@@ -51,12 +51,12 @@ func main() {
 	// Configure logging
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.LUTC | log.Lshortfile)
 
-	// Initialize Agones SDK
-	log.Println(">>> Connecting to Agones with the SDK")
+	// Create the SDK instance
 	s, err := sdk.NewSDK()
 	if err != nil {
 		log.Fatalf(">>> Could not connect to sdk: %v", err)
 	}
+	defer s.Shutdown()
 
 	// Initialize server state
 	serverState := &types.ServerState{
@@ -170,21 +170,18 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, s *s
 func waitForServerEnd(ctx context.Context, serverReady chan struct{}, s *sdk.SDK, reserveDuration time.Duration) {
 	select {
 	case <-serverReady:
-		log.Println(">>> Server reported ready, marking GameServer as Ready")
+		log.Printf(">>> Server reported ready, marking GameServer as Ready")
 		if err := s.Ready(); err != nil {
-			log.Fatalf(">>> Error marking GameServer as Ready: %v", err)
+			log.Printf(">>> Error marking server as ready: %v", err)
 		}
-		return
-	case <-time.After(reserveDuration):
-		log.Printf(">>> Reservation duration (%v) expired", reserveDuration)
-		if err := s.Shutdown(); err != nil {
-			log.Printf(">>> Failed to initiate shutdown after reservation: %v", err)
-		}
-		return
 	case <-ctx.Done():
-		log.Println(">>> Server shutdown completed")
+		log.Printf(">>> Context cancelled, initiating graceful shutdown")
 		return
 	}
+
+	// Add graceful shutdown handling
+	<-ctx.Done()
+	log.Printf(">>> Server shutdown initiated")
 }
 
 // setupSignalHandler configures signal handling for graceful shutdown.
