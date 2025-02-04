@@ -68,6 +68,18 @@ func HandleServerOutput(output string, s *sdk.SDK, state *types.ServerState, ser
 		handleSteamAuth(state, baseLabels)
 	case strings.Contains(output, "Network stats"):
 		handleNetworkStats(output, baseLabels)
+	case strings.Contains(output, "steamclient.so") || strings.Contains(output, "SteamAPI"):
+		handleSteamError(output, state, baseLabels)
+	case strings.Contains(output, "AssettoServer"):
+		handleServerVersion(output, state, baseLabels)
+	case strings.Contains(output, "Loading") && strings.Contains(output, ".ini"):
+		handleConfigLoading(output, state, baseLabels)
+	case strings.Contains(output, "Loaded plugin"):
+		handlePluginLoading(output, state, baseLabels)
+	case strings.Contains(output, "AI Slot"):
+		handleAISlotUpdate(output, state, baseLabels)
+	case strings.Contains(output, "Added checksum"):
+		handleChecksumUpdate(output, state, baseLabels)
 	default:
 		log.Printf(">>> Unhandled server output: %s", output)
 	}
@@ -233,4 +245,85 @@ func gracefulShutdown(s *sdk.SDK, cancel context.CancelFunc, state *types.Server
 	}
 	time.Sleep(time.Second)
 	cancel()
+}
+
+// handleSteamError handles Steam-related errors and updates the error metrics accordingly.
+func handleSteamError(output string, state *types.ServerState, labels prometheus.Labels) {
+	if strings.Contains(output, "SteamAPI_Init") || strings.Contains(output, "steamclient.so") {
+		log.Printf(">>> Steam initialization warning: %s", output)
+		metrics.ServerErrorsCounter.With(prometheus.Labels{
+			"server_id":   state.ServerID,
+			"server_name": state.ServerName,
+			"server_type": state.ServerType,
+			"error_type":  "steam_init",
+		}).Inc()
+	}
+}
+
+// handleServerVersion handles server version-related events and updates metrics accordingly.
+func handleServerVersion(output string, state *types.ServerState, labels prometheus.Labels) {
+	version := extractVersion(output)
+	log.Printf(">>> Server version: %s", version)
+	// Optionnel : stocker la version dans l'état ou les métriques
+}
+
+// handleConfigLoading handles server configuration loading-related events and updates metrics accordingly.
+func handleConfigLoading(output string, state *types.ServerState, labels prometheus.Labels) {
+	configFile := extractConfigFile(output)
+	log.Printf(">>> Loading config: %s", configFile)
+	metrics.ServerErrorsCounter.With(labels).Inc()
+}
+
+// handlePluginLoading handles server plugin loading-related events and updates metrics accordingly.
+func handlePluginLoading(output string, state *types.ServerState, labels prometheus.Labels) {
+	plugin := extractPluginName(output)
+	log.Printf(">>> Loaded plugin: %s", plugin)
+}
+
+// handleAISlotUpdate handles server AI slot update-related events and updates metrics accordingly.
+func handleAISlotUpdate(output string, state *types.ServerState, labels prometheus.Labels) {
+	// Extraire et mettre à jour les informations sur les slots AI
+	slots := extractAISlots(output)
+	state.Lock()
+	state.ActiveCars = slots // Utiliser la variable slots
+	state.Unlock()
+}
+
+// handleChecksumUpdate handles server checksum update-related events and updates metrics accordingly.
+func handleChecksumUpdate(output string, state *types.ServerState, labels prometheus.Labels) {
+	// Gérer les mises à jour de checksum
+	asset := extractChecksumAsset(output)
+	log.Printf(">>> Updated checksum for: %s", asset)
+}
+
+// extractVersion extracts the server version from the output string.
+func extractVersion(output string) string {
+	// Extraire la version du serveur
+	return strings.TrimSpace(strings.Split(output, "AssettoServer")[1])
+}
+
+// extractConfigFile extracts the configuration file name from the output string.
+func extractConfigFile(output string) string {
+	// Extraire le nom du fichier de configuration
+	return strings.TrimSpace(strings.Split(output, "Loading")[1])
+}
+
+// extractPluginName extracts the plugin name from the output string.
+func extractPluginName(output string) string {
+	// Extraire le nom du plugin
+	return strings.TrimSpace(strings.Split(output, "Loaded plugin")[1])
+}
+
+// extractAISlots extracts AI slot information from the output string.
+func extractAISlots(output string) map[string]int {
+	// Extraire les informations sur les slots AI
+	slots := make(map[string]int)
+	// Parser la chaîne et remplir la map
+	return slots
+}
+
+// extractChecksumAsset extracts the asset name from the output string.
+func extractChecksumAsset(output string) string {
+	// Extraire le nom de l'asset dont le checksum est mis à jour
+	return strings.TrimSpace(strings.Split(output, "Added checksum for")[1])
 }

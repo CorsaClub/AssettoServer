@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -271,43 +270,46 @@ func updateSystemMetrics(state *types.ServerState) {
 }
 
 // getProcessCPUUsage returns the CPU usage of the current process as a percentage.
-// It executes the 'ps' command to retrieve the CPU usage.
+// It reads directly from /proc/self/stat.
 func getProcessCPUUsage() (float64, error) {
-	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", os.Getpid()), "-o", "%cpu")
-	output, err := cmd.Output()
+	// Lire directement depuis /proc/self/stat
+	data, err := os.ReadFile("/proc/self/stat")
 	if err != nil {
-		return 0, fmt.Errorf("failed to get CPU usage: %v", err)
+		return 0, fmt.Errorf("failed to read CPU usage from /proc: %v", err)
 	}
 
-	// Parse the output, skipping the header line
-	lines := strings.Split(string(output), "\n")
-	if len(lines) < 2 {
-		return 0, fmt.Errorf("unexpected ps output format")
+	fields := strings.Fields(string(data))
+	if len(fields) < 14 {
+		return 0, fmt.Errorf("invalid /proc/self/stat format")
 	}
 
-	cpu := strings.TrimSpace(lines[1])
-	cpuUsage, err := strconv.ParseFloat(cpu, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse CPU usage: %v", err)
-	}
+	utime, _ := strconv.ParseFloat(fields[13], 64)
+	stime, _ := strconv.ParseFloat(fields[14], 64)
 
-	return cpuUsage, nil
+	return (utime + stime) / float64(os.Getpagesize()), nil
 }
 
 // getProcessMemoryUsage returns the memory usage of the current process in bytes.
-// It executes the 'ps' command to retrieve the RSS (Resident Set Size) and converts it from KB to bytes.
+// It reads directly from /proc/self/status.
 func getProcessMemoryUsage() (uint64, error) {
-	cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", os.Getpid()), "-o", "rss=")
-	output, err := cmd.Output()
+	// Lire directement depuis /proc/self/status
+	data, err := os.ReadFile("/proc/self/status")
 	if err != nil {
-		return 0, fmt.Errorf("failed to get memory usage: %v", err)
+		return 0, fmt.Errorf("failed to read memory usage from /proc: %v", err)
 	}
 
-	// Convert RSS from KB to bytes
-	memKB, err := strconv.ParseUint(strings.TrimSpace(string(output)), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse memory usage: %v", err)
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "VmRSS:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				memKB, err := strconv.ParseUint(fields[1], 10, 64)
+				if err != nil {
+					return 0, fmt.Errorf("failed to parse memory usage: %v", err)
+				}
+				return memKB * 1024, nil
+			}
+		}
 	}
 
-	return memKB * 1024, nil
+	return 0, fmt.Errorf("VmRSS not found in /proc/self/status")
 }
