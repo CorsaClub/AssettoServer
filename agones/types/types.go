@@ -44,12 +44,12 @@ type Player struct {
 
 // Session represents a game session.
 type Session struct {
-	Type       string          // Type of session (practice, qualifying, race)
-	StartTime  time.Time       // Start time of the session
-	EndTime    time.Time       // End time of the session
-	Duration   time.Duration   // Planned duration of the session
-	Track      string          // Name of the track
-	Conditions TrackConditions // Track conditions during the session
+	Type          string
+	StartTime     time.Time
+	EndTime       time.Time
+	Track         string
+	ID            string
+	RemainingTime string
 }
 
 // TrackConditions represents the conditions of the track.

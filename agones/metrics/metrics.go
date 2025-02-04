@@ -191,3 +191,41 @@ var (
 		append(ServerLabels, "player_name"),
 	)
 )
+
+var (
+	ServerPortsGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_ports_total",
+		Help: "Current number of ports used by the server",
+	}, []string{"port_type", "port"})
+
+	ServerUpdateRateGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_update_rate_seconds",
+		Help: "Current server update rate in seconds",
+	}, ServerLabels)
+
+	LobbyRegistrationCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_lobby_registrations_total",
+		Help: "Total number of lobby registrations",
+	}, ServerLabels)
+)
+
+var (
+	ServerStartCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_starts_total",
+		Help: "Total number of server starts",
+	}, ServerLabels)
+
+	SessionEndCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_ends_total",
+		Help: "Total number of server ends",
+	}, ServerLabels)
+
+	SessionDurationHistogram = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "assetto_server_session_duration_seconds",
+			Help:    "Duration of the current session in seconds",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 10),
+		},
+		append(ServerLabels, "session_type"),
+	)
+)

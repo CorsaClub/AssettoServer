@@ -14,6 +14,7 @@ type SessionManager struct {
 	history     []*types.Session       // History of previous sessions
 	maxHistory  int                    // Maximum number of sessions to keep in history
 	transitions chan SessionTransition // Channel to handle session transitions
+
 }
 
 // SessionTransition represents a transition between sessions.

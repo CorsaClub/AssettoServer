@@ -22,6 +22,7 @@ import (
 	"agones/handlers"
 	"agones/monitoring"
 	"agones/types"
+	"agones/utils"
 )
 
 // interceptor implémente un io.Writer qui intercepte et transmet les données écrites
@@ -48,13 +49,10 @@ func main() {
 	reserveDuration := flag.Duration("reserve-duration", 10*time.Minute, "Duration for server reservation")
 	flag.Parse()
 
-	// Configure logging
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.LUTC | log.Lshortfile)
-
 	// Create the SDK instance
 	s, err := sdk.NewSDK()
 	if err != nil {
-		log.Fatalf(">>> Could not connect to sdk: %v", err)
+		utils.LogError("Could not connect to sdk: %v", err)
 	}
 	defer s.Shutdown()
 
@@ -73,21 +71,21 @@ func main() {
 	defer cancel()
 
 	// Start health checking and metrics monitoring
-	log.Println(">>> Starting health checking")
+	utils.LogSDK("Starting health checking")
 	go monitoring.DoHealth(ctx, s, serverState, cancel)
 	go monitoring.MonitorMetrics(ctx, s, serverState)
 	go monitoring.MonitorSystemResources(ctx, serverState)
 
 	// Setup initial GameServer configuration
 	if err := setupGameServer(s, serverState); err != nil {
-		log.Fatalf(">>> Failed to setup GameServer: %v", err)
+		utils.LogError("Failed to setup GameServer: %v", err)
 	}
 
 	// Prepare and start the Assetto Corsa server
 	serverReady := make(chan struct{}, 1)
 	cmd := prepareServerCommand(ctx, input, args, s, serverState, serverReady)
 	if err := cmd.Start(); err != nil {
-		log.Fatalf(">>> Error Starting Cmd: %v", err)
+		utils.LogError("Error Starting Cmd: %v", err)
 	}
 
 	// Handle termination signals
@@ -121,7 +119,7 @@ func main() {
 
 		for _, condition := range conditions {
 			if !condition.check {
-				log.Printf(">>> Health check failed: %s", condition.msg)
+				utils.LogWarning("Health check failed: %s", condition.msg)
 				w.WriteHeader(http.StatusServiceUnavailable)
 				w.Write([]byte(condition.msg))
 				return
@@ -142,7 +140,7 @@ func main() {
 		}
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf(">>> HTTP health server error: %v", err)
+			utils.LogError("HTTP health server error: %v", err)
 		}
 	}()
 }
@@ -170,18 +168,18 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, s *s
 func waitForServerEnd(ctx context.Context, serverReady chan struct{}, s *sdk.SDK, reserveDuration time.Duration) {
 	select {
 	case <-serverReady:
-		log.Printf(">>> Server reported ready, marking GameServer as Ready")
+		utils.LogSDK("Server reported ready, marking GameServer as Ready")
 		if err := s.Ready(); err != nil {
-			log.Printf(">>> Error marking server as ready: %v", err)
+			utils.LogError("Error marking server as ready: %v", err)
 		}
 	case <-ctx.Done():
-		log.Printf(">>> Context cancelled, initiating graceful shutdown")
+		utils.LogSDK("Context cancelled, initiating graceful shutdown")
 		return
 	}
 
 	// Add graceful shutdown handling
 	<-ctx.Done()
-	log.Printf(">>> Server shutdown initiated")
+	utils.LogSDK("Server shutdown initiated")
 }
 
 // setupSignalHandler configures signal handling for graceful shutdown.
@@ -191,7 +189,7 @@ func setupSignalHandler(cancel context.CancelFunc, s *sdk.SDK, state *types.Serv
 
 	go func() {
 		sig := <-sigChan
-		log.Printf(">>> Received signal %v, initiating shutdown", sig)
+		utils.LogSDK("Received signal %v, initiating shutdown", sig)
 
 		state.Lock()
 		state.ShuttingDown = true
@@ -199,7 +197,7 @@ func setupSignalHandler(cancel context.CancelFunc, s *sdk.SDK, state *types.Serv
 
 		// Notify Agones of shutdown
 		if err := s.Shutdown(); err != nil {
-			log.Printf(">>> Failed to notify Agones of shutdown: %v", err)
+			utils.LogError("Failed to notify Agones of shutdown: %v", err)
 		}
 
 		time.Sleep(timeout)
@@ -213,7 +211,7 @@ func initMetrics() {
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
 		if err := http.ListenAndServe(":9090", nil); err != nil {
-			log.Printf(">>> Warning: Metrics server failed: %v", err)
+			utils.LogWarning("Metrics server failed: %v", err)
 		}
 	}()
 }

@@ -4,7 +4,6 @@ package monitoring
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"agones/metrics"
 	"agones/types"
+	"agones/utils"
 )
 
 // DoHealth performs periodic health checks of the server.
@@ -35,7 +35,7 @@ func DoHealth(ctx context.Context, s *sdk.SDK, state *types.ServerState, cancel 
 
 			// Perform health check with Agones SDK
 			if err := s.Health(); err != nil {
-				log.Printf(">>> Agones health check failed: %v", err)
+				utils.LogWarning("Agones health check failed: %v", err)
 
 				// Increment the health ping failure counter
 				metrics.HealthPingFailuresCounter.With(prometheus.Labels{
@@ -46,11 +46,13 @@ func DoHealth(ctx context.Context, s *sdk.SDK, state *types.ServerState, cancel 
 
 				// Retrieve and log the GameServer state during health failure
 				if gameServer, gsErr := s.GameServer(); gsErr == nil {
-					log.Printf(">>> GameServer state during health failure: %v", gameServer.Status.State)
+					utils.LogSDK("GameServer state during health failure: %v", gameServer.Status.State)
 				}
 
 				// Log the current system state
-				log.Printf(">>> System state - Players: %d, Ready: %v", state.Players, state.Ready)
+				state.RLock()
+				utils.LogSDK("System state - Players: %d, Ready: %v", state.Players, state.Ready)
+				state.RUnlock()
 
 				// Initiate a graceful shutdown
 				gracefulShutdown(s, cancel, state)
@@ -69,7 +71,7 @@ func DoHealth(ctx context.Context, s *sdk.SDK, state *types.ServerState, cancel 
 			// Log health status periodically every 30 seconds
 			if time.Now().Second()%30 == 0 {
 				state.RLock()
-				log.Printf(">>> Health status: Ready=%v, LastPing=%v ago, ShuttingDown=%v",
+				utils.LogSDK("Health status: Ready=%v, LastPing=%v ago, ShuttingDown=%v",
 					state.Ready,
 					time.Since(state.LastPing),
 					state.ShuttingDown)
@@ -93,10 +95,10 @@ func MonitorMetrics(ctx context.Context, s *sdk.SDK, state *types.ServerState) {
 			state.RLock()
 			// Retrieve the current GameServer status from Agones
 			if gameServer, err := s.GameServer(); err != nil {
-				log.Printf(">>> Warning: Failed to get GameServer status: %v", err)
+				utils.LogWarning("Warning: Failed to get GameServer status: %v", err)
 			} else {
 				monitorGameServerState(gameServer)
-				log.Printf(">>> GameServer Status: %v, Players: %d, Ready: %v, Last Ping: %v",
+				utils.LogSDK("GameServer Status: %s, Players: %d, Ready: %v, Last Ping: %v",
 					gameServer.Status.State,
 					state.Players,
 					state.Ready,
@@ -135,7 +137,7 @@ func MonitorSystemResources(ctx context.Context, state *types.ServerState) {
 				}()
 			default:
 				// Skip this update if the pool is full to avoid overwhelming the system
-				log.Println(">>> Skipping metrics update - too busy")
+				utils.LogDebug("Skipping metrics update - too busy")
 			}
 		}
 	}
@@ -149,7 +151,7 @@ func gracefulShutdown(s *sdk.SDK, cancel context.CancelFunc, state *types.Server
 	state.Unlock()
 
 	if err := s.Shutdown(); err != nil {
-		log.Printf(">>> Warning: Could not send shutdown message: %v", err)
+		utils.LogWarning("Warning: Could not send shutdown message: %v", err)
 	}
 	time.Sleep(time.Second)
 	cancel()
@@ -158,7 +160,7 @@ func gracefulShutdown(s *sdk.SDK, cancel context.CancelFunc, state *types.Server
 // monitorGameServerState logs detailed information about the GameServer's state.
 // It is useful for debugging purposes.
 func monitorGameServerState(gameServer interface{}) {
-	log.Printf(">>> GameServer Details: %+v", gameServer)
+	utils.LogSDK("GameServer Details: %+v", gameServer)
 }
 
 // updateServerAnnotations updates the server's annotations with the current player count, readiness, and allocation status.
@@ -172,7 +174,7 @@ func updateServerAnnotations(s *sdk.SDK, state *types.ServerState) {
 
 	for key, value := range annotations {
 		if err := s.SetAnnotation(key, value); err != nil {
-			log.Printf(">>> Warning: Failed to set %s annotation: %v", key, err)
+			utils.LogWarning("Warning: Failed to set %s annotation: %v", key, err)
 		}
 	}
 }
@@ -258,14 +260,14 @@ func updateSystemMetrics(state *types.ServerState) {
 	if cpu, err := getProcessCPUUsage(); err == nil {
 		metrics.CpuUsageGauge.With(labels).Set(cpu)
 	} else {
-		log.Printf(">>> Warning: %v", err)
+		utils.LogWarning("%v", err)
 	}
 
 	// Retrieve and update Memory usage metric
 	if mem, err := getProcessMemoryUsage(); err == nil {
 		metrics.MemoryUsageGauge.With(labels).Set(float64(mem))
 	} else {
-		log.Printf(">>> Warning: %v", err)
+		utils.LogWarning("%v", err)
 	}
 }
 
