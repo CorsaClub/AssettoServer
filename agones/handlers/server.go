@@ -129,7 +129,7 @@ func HandleServerOutput(output string, s *sdk.SDK, state *types.ServerState, ser
 		case strings.Contains(output, "Connected to Steam Servers"):
 			handleSteamConnection(output, state, baseLabels)
 		default:
-			utils.LogSDK("Unhandled server output: %s", output)
+			utils.LogWarning("Unhandled output: %s", output)
 		}
 	}
 }
@@ -368,26 +368,19 @@ func handleSteamError(output string, state *types.ServerState, _ prometheus.Labe
 
 // handleServerVersion handles server version-related events and updates metrics accordingly.
 func handleServerVersion(output string, _ *types.ServerState, _ prometheus.Labels) {
-	version := extractVersion(output)
-	utils.LogSDK("Server version: %s", version)
+	//version := extractVersion(output)
+	//utils.LogSDK("Server version: %s", version)
 }
 
 // handleConfigLoading handles server configuration loading-related events and updates metrics accordingly.
-func handleConfigLoading(output string, state *types.ServerState, _ prometheus.Labels) {
-	configFile := extractConfigFile(output)
-	utils.LogSDK("Loading config: %s", configFile)
-	metrics.ServerErrorsCounter.With(prometheus.Labels{
-		"server_id":   state.ServerID,
-		"server_name": state.ServerName,
-		"server_type": state.ServerType,
-		"error_type":  "config_loading",
-	}).Inc()
+func handleConfigLoading(output string, state *types.ServerState, labels prometheus.Labels) {
+	//configFile := extractConfigFile(output)
+	metrics.ServerErrorsCounter.With(labels).Inc()
 }
 
 // handlePluginLoading handles server plugin loading-related events and updates metrics accordingly.
 func handlePluginLoading(output string, _ *types.ServerState, _ prometheus.Labels) {
-	plugin := extractPluginName(output)
-	utils.LogSDK("Loaded plugin: %s", plugin)
+	// Ne rien logger car on ne fait aucun traitement spécifique
 }
 
 // handleAISlotUpdate handles server AI slot update-related events and updates metrics accordingly.
@@ -401,9 +394,7 @@ func handleAISlotUpdate(output string, state *types.ServerState, _ prometheus.La
 
 // handleChecksumUpdate handles server checksum update-related events and updates metrics accordingly.
 func handleChecksumUpdate(output string, _ *types.ServerState, _ prometheus.Labels) {
-	// Gérer les mises à jour de checksum
-	asset := extractChecksumAsset(output)
-	utils.LogSDK("Updated checksum for: %s", asset)
+	// Ne rien logger car on ne fait aucun traitement spécifique
 }
 
 // extractVersion extracts the server version from the output string.
@@ -440,14 +431,14 @@ func extractChecksumAsset(output string) string {
 
 // handleServerInvite handles server invite-related events
 func handleServerInvite(output string, _ *types.ServerState, _ prometheus.Labels) {
-	url := strings.Split(output, "Server invite link:")[1]
-	utils.LogSDK("Server invite URL available: %s", strings.TrimSpace(url))
+	//url := strings.Split(output, "Server invite link:")[1]
+	//utils.LogSDK("Server invite URL available: %s", strings.TrimSpace(url))
 }
 
 // handleSessionSwitch handles session switch-related events and updates metrics accordingly.
 func handleSessionSwitch(output string, state *types.ServerState, _ prometheus.Labels) {
 	sessionID := extractSessionID(output)
-	utils.LogSDK("Switching to session ID: %s", sessionID)
+	//utils.LogSDK("Switching to session ID: %s", sessionID)
 	state.Lock()
 	if state.CurrentSession != nil {
 		state.CurrentSession.ID = sessionID
@@ -458,7 +449,7 @@ func handleSessionSwitch(output string, state *types.ServerState, _ prometheus.L
 // handleTCPServer handles TCP server-related events
 func handleTCPServer(output string, _ *types.ServerState, _ prometheus.Labels) {
 	port := strings.Split(output, "port")[1]
-	utils.LogSDK("Starting TCP server on port%s", port)
+	//utils.LogSDK("Starting TCP server on port%s", port)
 	metrics.ServerPortsGauge.With(prometheus.Labels{
 		"port_type": "tcp",
 		"port":      strings.TrimSpace(port),
@@ -468,7 +459,7 @@ func handleTCPServer(output string, _ *types.ServerState, _ prometheus.Labels) {
 // handleUDPServer handles UDP server-related events
 func handleUDPServer(output string, _ *types.ServerState, _ prometheus.Labels) {
 	port := strings.Split(output, "port")[1]
-	utils.LogSDK("Starting UDP server on port%s", port)
+	//utils.LogSDK("Starting UDP server on port%s", port)
 	metrics.ServerPortsGauge.With(prometheus.Labels{
 		"port_type": "udp",
 		"port":      strings.TrimSpace(port),
@@ -478,7 +469,7 @@ func handleUDPServer(output string, _ *types.ServerState, _ prometheus.Labels) {
 // handleSessionTime handles session time-related events and updates metrics accordingly.
 func handleSessionTime(output string, state *types.ServerState, _ prometheus.Labels) {
 	duration := strings.Split(output, "session :")[1]
-	utils.LogSDK("Remaining time of session :%s", duration)
+	//utils.LogSDK("Remaining time of session :%s", duration)
 	state.Lock()
 	if state.CurrentSession != nil {
 		state.CurrentSession.RemainingTime = strings.TrimSpace(duration)
@@ -488,19 +479,17 @@ func handleSessionTime(output string, state *types.ServerState, _ prometheus.Lab
 
 // handleLobbyRegistration handles lobby registration-related events
 func handleLobbyRegistration(_ string, _ *types.ServerState, _ prometheus.Labels) {
-	utils.LogSDK("Registering server to lobby...")
+	utils.LogSDK("LOBBY REGISTRATION : OK - Approved by SDK")
 }
 
 // handleUpdateLoop handles update loop-related events
 func handleUpdateLoop(output string, _ *types.ServerState, labels prometheus.Labels) {
 	rate := strings.Split(output, "rate of")[1]
-	utils.LogSDK("Starting update loop with an update rate of%s", rate)
 	metrics.ServerUpdateRateGauge.With(labels).Set(parseUpdateRate(rate))
 }
 
 // handleLobbySuccess handles lobby success-related events
 func handleLobbySuccess(_ string, _ *types.ServerState, labels prometheus.Labels) {
-	utils.LogSDK("Lobby registration successful")
 	metrics.LobbyRegistrationCounter.With(labels).Inc()
 }
 
@@ -522,28 +511,28 @@ func parseUpdateRate(rate string) float64 {
 
 // handleCSPVersion handles CSP version information
 func handleCSPVersion(output string, _ *types.ServerState, _ prometheus.Labels) {
-	version := strings.Split(output, "Version")[1]
-	utils.LogSDK("Using minimum required CSP Version %s", strings.TrimSpace(version))
+	//version := strings.Split(output, "Version")[1]
+	//utils.LogSDK("Using minimum required CSP Version %s", strings.TrimSpace(version))
 }
 
 // handleAISpline handles AI spline cache events
 func handleAISpline(output string, _ *types.ServerState, _ prometheus.Labels) {
-	utils.LogSDK(output)
+	// Don't log anything
 }
 
 // handleAILaneDetection handles AI lane detection events
 func handleAILaneDetection(output string, _ *types.ServerState, _ prometheus.Labels) {
-	utils.LogSDK(output)
+	// Don't log anything
 }
 
 // handleAISplineCache handles AI spline caching events
 func handleAISplineCache(output string, _ *types.ServerState, _ prometheus.Labels) {
-	utils.LogSDK(output)
+	// Don't log anything
 }
 
 // handleAISplineMapping handles AI spline mapping events
 func handleAISplineMapping(output string, _ *types.ServerState, _ prometheus.Labels) {
-	utils.LogSDK(output)
+	// Don't log anything
 }
 
 // handleKeysStorage handles key storage events
@@ -558,23 +547,20 @@ func handleXMLEncryption(output string, _ *types.ServerState, _ prometheus.Label
 
 // handleBlacklistLoading handles blacklist loading events
 func handleBlacklistLoading(output string, _ *types.ServerState, _ prometheus.Labels) {
-	entries := strings.Split(output, "with")[1]
-	utils.LogSDK("Loaded blacklist.txt%s", entries)
+	// Don't log anything
 }
 
 // handleWhitelistLoading handles whitelist loading events
 func handleWhitelistLoading(output string, _ *types.ServerState, _ prometheus.Labels) {
-	entries := strings.Split(output, "with")[1]
-	utils.LogSDK("Loaded whitelist.txt%s", entries)
+	// Don't log anything
 }
 
 // handleAdminsLoading handles admin list loading events
 func handleAdminsLoading(output string, _ *types.ServerState, _ prometheus.Labels) {
-	entries := strings.Split(output, "with")[1]
-	utils.LogSDK("Loaded admins.txt%s", entries)
+	// Don't log anything
 }
 
 // handleSteamConnection handles Steam connection events
 func handleSteamConnection(output string, _ *types.ServerState, _ prometheus.Labels) {
-	utils.LogSDK(output)
+	// Don't log anything
 }

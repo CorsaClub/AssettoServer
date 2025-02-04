@@ -157,10 +157,9 @@ func gracefulShutdown(s *sdk.SDK, cancel context.CancelFunc, state *types.Server
 	cancel()
 }
 
-// monitorGameServerState logs detailed information about the GameServer's state.
-// It is useful for debugging purposes.
+// monitorGameServerState logs the GameServer state for debugging purposes.
 func monitorGameServerState(gameServer interface{}) {
-	utils.LogSDK("GameServer Details: %+v", gameServer)
+	// Don't log anymore the GameServer details
 }
 
 // updateServerAnnotations updates the server's annotations with the current player count, readiness, and allocation status.
