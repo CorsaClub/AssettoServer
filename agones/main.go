@@ -37,31 +37,6 @@ func (i *interceptor) Write(p []byte) (n int, err error) {
 	return i.forward.Write(p)
 }
 
-// Config struct for flexible configuration
-type Config struct {
-	ServerScript    string        `json:"server_script"`
-	ServerArgs      string        `json:"server_args"`
-	ShutdownTimeout time.Duration `json:"shutdown_timeout"`
-	ReserveDuration time.Duration `json:"reserve_duration"`
-	HealthCheckRate time.Duration `json:"health_check_rate"`
-	MetricsPort     int           `json:"metrics_port"`
-	HealthPort      int           `json:"health_port"`
-	Debug           bool          `json:"debug"`
-}
-
-// LogEvent struct for structured logging
-type LogEvent struct {
-	Timestamp   time.Time `json:"timestamp"`
-	Level       string    `json:"level"`
-	Event       string    `json:"event"`
-	ServerID    string    `json:"server_id"`
-	ServerName  string    `json:"server_name"`
-	Message     string    `json:"message"`
-	Players     int       `json:"players"`
-	SessionType string    `json:"session_type"`
-	Error       string    `json:"error,omitempty"`
-}
-
 // main is the entry point of the application.
 // It initializes the Agones SDK, starts the Assetto Corsa server,
 // and manages the server's lifecycle including health checks and metrics.

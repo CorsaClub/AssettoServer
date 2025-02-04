@@ -6,9 +6,8 @@ ENV GO111MODULE=on
 ENV GOARCH=amd64
 ENV GOOS=linux
 
-COPY agones/go.mod .
-COPY agones/go.sum .
-COPY agones/main.go .
+# Copier tout le contenu du répertoire agones
+COPY agones/ .
 
 RUN go mod tidy
 RUN GOARCH=amd64 GOOS=linux go mod download
