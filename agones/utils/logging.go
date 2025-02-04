@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+func init() {
+	// Disable default logger timestamp
+	log.SetFlags(0)
+}
+
 const (
 	LogFormatSDK = "[%s SDK] %s"
 	LogFormatINF = "[%s INF] %s"
