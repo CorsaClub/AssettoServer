@@ -205,15 +205,13 @@ func handlePlayerConnect(s *sdk.SDK, state *types.ServerState, output string, la
 
 	metrics.PlayersGauge.With(labels).Set(float64(state.Players))
 	metrics.PlayerConnectCounter.With(labels).Inc()
-	metrics.PlayerLatencyGauge.With(prometheus.Labels{
-		"player_id": player.SteamID,
-		"server_id": labels["server_id"],
-	}).Set(float64(player.Latency))
+	playerLabels := copyLabels(labels)
+	playerLabels["player_name"] = player.Name
+	playerLabels["steam_id"] = player.SteamID
+	playerLabels["car_name"] = player.CarModel
+	metrics.PlayerLatencyGauge.With(playerLabels).Set(float64(player.Latency))
 	updatePlayerCount(s, state.Players)
-
-	carLabels := copyLabels(labels)
-	carLabels["car_name"] = player.CarModel
-	metrics.CarUsageCounter.With(carLabels).Inc()
+	metrics.CarUsageCounter.With(playerLabels).Inc()
 }
 
 // handlePlayerDisconnect processes a player's disconnection and updates relevant metrics.
