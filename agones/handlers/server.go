@@ -58,6 +58,10 @@ func HandleServerOutput(output string, s *sdk.SDK, state *types.ServerState, ser
 		return
 	default:
 		switch {
+		case strings.Contains(output, "is attempting to connect"):
+			handleAttemptingToConnect(output, state, baseLabels)
+		case strings.Contains(output, "supports extra CSP features"):
+			handleExtraCSPFeatures(output, state, baseLabels)
 		case strings.Contains(output, "Starting Assetto Corsa Server..."):
 			handleServerStarting(state, baseLabels)
 		case strings.Contains(output, "Lobby registration successful"):
@@ -560,5 +564,13 @@ func handleAdminsLoading(output string, _ *types.ServerState, _ prometheus.Label
 
 // handleSteamConnection handles Steam connection events
 func handleSteamConnection(output string, _ *types.ServerState, _ prometheus.Labels) {
+	// Don't log anything
+}
+
+func handleAttemptingToConnect(output string, _ *types.ServerState, _ prometheus.Labels) {
+	// Don't log anything
+}
+
+func handleExtraCSPFeatures(output string, _ *types.ServerState, _ prometheus.Labels) {
 	// Don't log anything
 }
