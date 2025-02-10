@@ -213,6 +213,7 @@ func handleSessionEnd(s *sdk.SDK, state *types.ServerState, labels prometheus.La
 
 // handlePlayerConnect processes a player's connection, updates player counts, and increments relevant metrics.
 func handlePlayerConnect(s *sdk.SDK, state *types.ServerState, output string, labels prometheus.Labels) {
+	// Extract player info using the utility function
 	player := utils.ExtractPlayerInfo(output)
 	if player.SteamID == "" {
 		utils.LogWarning("Invalid player info from output: %s", output)
@@ -230,9 +231,9 @@ func handlePlayerConnect(s *sdk.SDK, state *types.ServerState, output string, la
 		"server_id":   labels["server_id"],
 		"server_name": labels["server_name"],
 		"server_type": labels["server_type"],
-		"player_name": player.Name,
-		"steam_id":    player.SteamID,
-		"car_name":    player.CarModel,
+		"player_name": player.Name,     // Use clean player name
+		"steam_id":    player.SteamID,  // Use clean Steam ID
+		"car_name":    player.CarModel, // Use clean car model
 	}
 
 	// Update player-specific metrics with complete set of labels
@@ -410,12 +411,23 @@ func handlePluginLoading(output string, _ *types.ServerState, _ prometheus.Label
 }
 
 // handleAISlotUpdate handles server AI slot update-related events and updates metrics accordingly.
-func handleAISlotUpdate(output string, state *types.ServerState, _ prometheus.Labels) {
-	// Extraire et mettre à jour les informations sur les slots AI
-	slots := extractAISlots(output)
+func handleAISlotUpdate(output string, state *types.ServerState, labels prometheus.Labels) {
+	// Extract AI slot information
+	slots := utils.ExtractAISlots(output)
 	state.Lock()
-	state.ActiveCars = slots // Utiliser la variable slots
+	state.ActiveCars = slots
 	state.Unlock()
+
+	// Ensure all required labels are present
+	aiLabels := prometheus.Labels{
+		"server_id":   labels["server_id"],
+		"server_name": labels["server_name"],
+		"server_type": labels["server_type"],
+		"slot_type":   "ai", // Add missing label
+	}
+
+	// Update metrics with complete labels
+	metrics.ServerStateGauge.With(aiLabels).Set(float64(len(slots)))
 }
 
 // handleChecksumUpdate handles server checksum update-related events and updates metrics accordingly.
@@ -439,14 +451,6 @@ func extractConfigFile(output string) string {
 func extractPluginName(output string) string {
 	// Extract plugin name
 	return strings.TrimSpace(strings.Split(output, "Loaded plugin")[1])
-}
-
-// extractAISlots extracts AI slot information from the output string.
-func extractAISlots(output string) map[string]int {
-	// Extract AI slot information
-	slots := make(map[string]int)
-	// Parse the string and fill the map
-	return slots
 }
 
 // extractChecksumAsset extracts the asset name from the output string.
@@ -599,10 +603,20 @@ func handleExtraCSPFeatures(output string, _ *types.ServerState, _ prometheus.La
 	// Don't log anything
 }
 
-func handleCSPHandshake(output string, _ *types.ServerState, labels prometheus.Labels) {
+func handleCSPHandshake(output string, state *types.ServerState, labels prometheus.Labels) {
 	if strings.Contains(output, "Version=") {
 		version := utils.ExtractCSPVersion(output)
-		metrics.CSPVersionGauge.With(labels).Set(float64(version))
+		playerName := utils.ExtractCSPPlayerName(output)
+
+		// S'assurer que tous les labels requis sont présents
+		cspLabels := prometheus.Labels{
+			"server_id":   labels["server_id"],
+			"server_name": labels["server_name"],
+			"server_type": labels["server_type"],
+			"player_name": playerName, // Ajouter le label manquant
+		}
+
+		metrics.CSPVersionGauge.With(cspLabels).Set(float64(version))
 	}
 }
 
