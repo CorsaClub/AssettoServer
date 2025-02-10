@@ -116,5 +116,4 @@ type GameServerSDK interface {
 	Alpha() interface{}                                 // Access to experimental features
 	Connect() error                                     // Connect to the SDK
 	Close() error                                       // Close the SDK connection
-	// Add other methods as needed
 }
