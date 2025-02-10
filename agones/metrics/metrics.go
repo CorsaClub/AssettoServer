@@ -242,3 +242,21 @@ var (
 		Help: "Total number of bytes sent",
 	}, ServerLabels)
 )
+
+// CSP related metrics
+var (
+	// CSPVersionGauge tracks CSP version of connected players
+	CSPVersionGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "assetto_server_csp_version",
+		Help: "CSP version of connected players",
+	}, append(ServerLabels, "player_name"))
+)
+
+// Chat metrics
+var (
+	// ChatMessagesCounter tracks total number of chat messages
+	ChatMessagesCounter = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "assetto_server_chat_messages_total",
+		Help: "Total number of chat messages",
+	}, ServerLabels)
+)

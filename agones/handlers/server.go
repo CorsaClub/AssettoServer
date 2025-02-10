@@ -132,6 +132,12 @@ func HandleServerOutput(output string, s *sdk.SDK, state *types.ServerState, ser
 			handleAdminsLoading(output, state, baseLabels)
 		case strings.Contains(output, "Connected to Steam Servers"):
 			handleSteamConnection(output, state, baseLabels)
+		case strings.Contains(output, "CSP handshake received"):
+			handleCSPHandshake(output, state, baseLabels)
+		case strings.Contains(output, "CHAT:"):
+			handleChatMessage(output, state, baseLabels)
+		case strings.Contains(output, "Received clean exit"):
+			handleCleanExit(output, state, baseLabels)
 		default:
 			utils.LogWarning("Unhandled output: %s", output)
 		}
@@ -181,7 +187,7 @@ func handleServerReady(state *types.ServerState, labels prometheus.Labels, serve
 	}
 }
 
-// handleSessionEnd handles the end of a game session by initiating a graceful shutdown.
+// handleSessionEnd handles the end of a game session by kicking all players and initiating a graceful shutdown.
 func handleSessionEnd(s *sdk.SDK, state *types.ServerState, labels prometheus.Labels, cancel context.CancelFunc) {
 	state.Lock()
 	if state.ShuttingDown {
@@ -189,11 +195,19 @@ func handleSessionEnd(s *sdk.SDK, state *types.ServerState, labels prometheus.La
 		return
 	}
 	state.ShuttingDown = true
+
+	// Clear connected players on session end
+	for steamID, player := range state.ConnectedPlayers {
+		utils.LogSDK("Player %s (Steam ID: %s) disconnected due to session end", player.Name, steamID)
+		delete(state.ConnectedPlayers, steamID)
+	}
+	state.Players = 0
 	state.Unlock()
 
 	utils.LogSDK("Session ended, initiating server shutdown")
 	metrics.ServerStateGauge.With(labels).Set(types.ServerStateShutdown)
 	metrics.SessionEndCounter.With(labels).Inc()
+	metrics.PlayersGauge.With(labels).Set(0) // Reset player count to 0
 	gracefulShutdown(s, cancel, state)
 }
 
@@ -207,15 +221,25 @@ func handlePlayerConnect(s *sdk.SDK, state *types.ServerState, output string, la
 
 	addPlayer(state, player)
 
+	// Update basic metrics with base labels
 	metrics.PlayersGauge.With(labels).Set(float64(state.Players))
 	metrics.PlayerConnectCounter.With(labels).Inc()
-	playerLabels := copyLabels(labels)
-	playerLabels["player_name"] = player.Name
-	playerLabels["steam_id"] = player.SteamID
-	playerLabels["car_name"] = player.CarModel
+
+	// Create player-specific labels by copying base labels and adding player info
+	playerLabels := prometheus.Labels{
+		"server_id":   labels["server_id"],
+		"server_name": labels["server_name"],
+		"server_type": labels["server_type"],
+		"player_name": player.Name,
+		"steam_id":    player.SteamID,
+		"car_name":    player.CarModel,
+	}
+
+	// Update player-specific metrics with complete set of labels
 	metrics.PlayerLatencyGauge.With(playerLabels).Set(float64(player.Latency))
-	updatePlayerCount(s, state.Players)
 	metrics.CarUsageCounter.With(playerLabels).Inc()
+
+	updatePlayerCount(s, state.Players)
 }
 
 // handlePlayerDisconnect processes a player's disconnection and updates relevant metrics.
@@ -382,7 +406,7 @@ func handleConfigLoading(output string, state *types.ServerState, labels prometh
 
 // handlePluginLoading handles server plugin loading-related events and updates metrics accordingly.
 func handlePluginLoading(output string, _ *types.ServerState, _ prometheus.Labels) {
-	// Ne rien logger car on ne fait aucun traitement spécifique
+	// Don't log anything
 }
 
 // handleAISlotUpdate handles server AI slot update-related events and updates metrics accordingly.
@@ -396,38 +420,38 @@ func handleAISlotUpdate(output string, state *types.ServerState, _ prometheus.La
 
 // handleChecksumUpdate handles server checksum update-related events and updates metrics accordingly.
 func handleChecksumUpdate(output string, _ *types.ServerState, _ prometheus.Labels) {
-	// Ne rien logger car on ne fait aucun traitement spécifique
+	// Don't log anything
 }
 
 // extractVersion extracts the server version from the output string.
 func extractVersion(output string) string {
-	// Extraire la version du serveur
+	// Extract server version
 	return strings.TrimSpace(strings.Split(output, "AssettoServer")[1])
 }
 
 // extractConfigFile extracts the configuration file name from the output string.
 func extractConfigFile(output string) string {
-	// Extraire le nom du fichier de configuration
+	// Extract configuration file name
 	return strings.TrimSpace(strings.Split(output, "Loading")[1])
 }
 
 // extractPluginName extracts the plugin name from the output string.
 func extractPluginName(output string) string {
-	// Extraire le nom du plugin
+	// Extract plugin name
 	return strings.TrimSpace(strings.Split(output, "Loaded plugin")[1])
 }
 
 // extractAISlots extracts AI slot information from the output string.
 func extractAISlots(output string) map[string]int {
-	// Extraire les informations sur les slots AI
+	// Extract AI slot information
 	slots := make(map[string]int)
-	// Parser la chaîne et remplir la map
+	// Parse the string and fill the map
 	return slots
 }
 
 // extractChecksumAsset extracts the asset name from the output string.
 func extractChecksumAsset(output string) string {
-	// Extraire le nom de l'asset dont le checksum est mis à jour
+	// Extract the asset name from the output string
 	return strings.TrimSpace(strings.Split(output, "Added checksum for")[1])
 }
 
@@ -573,4 +597,21 @@ func handleAttemptingToConnect(output string, _ *types.ServerState, _ prometheus
 
 func handleExtraCSPFeatures(output string, _ *types.ServerState, _ prometheus.Labels) {
 	// Don't log anything
+}
+
+func handleCSPHandshake(output string, _ *types.ServerState, labels prometheus.Labels) {
+	if strings.Contains(output, "Version=") {
+		version := utils.ExtractCSPVersion(output)
+		metrics.CSPVersionGauge.With(labels).Set(float64(version))
+	}
+}
+
+func handleChatMessage(_ string, _ *types.ServerState, labels prometheus.Labels) {
+	// Optional: track chat messages if necessary
+	metrics.ChatMessagesCounter.With(labels).Inc()
+}
+
+func handleCleanExit(output string, _ *types.ServerState, _ prometheus.Labels) {
+	steamID := utils.ExtractSteamID(output)
+	utils.LogDebug("Clean exit received for player with Steam ID: %s", steamID)
 }

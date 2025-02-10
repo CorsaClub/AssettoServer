@@ -99,3 +99,18 @@ func extractBytes(output, prefix string) int64 {
 	}
 	return 0
 }
+
+// ExtractCSPVersion extracts the CSP version from server output.
+func ExtractCSPVersion(output string) int {
+	if strings.Contains(output, "Version=") {
+		parts := strings.Split(output, "Version=")
+		if len(parts) > 1 {
+			versionStr := strings.Split(parts[1], " ")[0]
+			version, err := strconv.Atoi(versionStr)
+			if err == nil {
+				return version
+			}
+		}
+	}
+	return 0
+}
