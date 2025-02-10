@@ -213,6 +213,7 @@ func handleSessionEnd(s *sdk.SDK, state *types.ServerState, labels prometheus.La
 
 // handlePlayerConnect processes a player's connection, updates player counts, and increments relevant metrics.
 func handlePlayerConnect(s *sdk.SDK, state *types.ServerState, output string, labels prometheus.Labels) {
+	// Extract player info using the utility function
 	player := utils.ExtractPlayerInfo(output)
 	if player.SteamID == "" {
 		utils.LogWarning("Invalid player info from output: %s", output)
@@ -230,9 +231,9 @@ func handlePlayerConnect(s *sdk.SDK, state *types.ServerState, output string, la
 		"server_id":   labels["server_id"],
 		"server_name": labels["server_name"],
 		"server_type": labels["server_type"],
-		"player_name": player.Name,
-		"steam_id":    player.SteamID,
-		"car_name":    player.CarModel,
+		"player_name": player.Name,     // Use clean player name
+		"steam_id":    player.SteamID,  // Use clean Steam ID
+		"car_name":    player.CarModel, // Use clean car model
 	}
 
 	// Update player-specific metrics with complete set of labels

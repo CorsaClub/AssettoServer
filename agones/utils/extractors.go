@@ -23,18 +23,26 @@ func ExtractPlayerInfo(output string) types.Player {
 
 // ExtractName extracts the player's name from server output.
 func ExtractName(output string) string {
-	return strings.TrimSpace(strings.Split(output, "has connected")[0])
+	// Remove timestamp if present
+	if idx := strings.Index(output, "]"); idx != -1 {
+		output = strings.TrimSpace(output[idx+1:])
+	}
+
+	// Extract name before "has connected"
+	name := strings.Split(output, "has connected")[0]
+	// Remove Steam ID and car info if present
+	if idx := strings.Index(name, "("); idx != -1 {
+		name = name[:idx]
+	}
+	return strings.TrimSpace(name)
 }
 
 // ExtractSteamID extracts the Steam ID from server output.
 func ExtractSteamID(output string) string {
 	if start := strings.Index(output, "("); start != -1 {
-		if end := strings.Index(output[start:], ")"); end != -1 {
-			steamInfo := output[start+1 : start+end]
-			parts := strings.Split(steamInfo, " - ")
-			if len(parts) > 0 {
-				return parts[0]
-			}
+		if end := strings.Index(output[start:], ","); end != -1 {
+			steamID := output[start+1 : start+end]
+			return strings.TrimSpace(steamID)
 		}
 	}
 	return ""
@@ -44,7 +52,12 @@ func ExtractSteamID(output string) string {
 func ExtractCarModel(output string) string {
 	if start := strings.LastIndex(output, "("); start != -1 {
 		if end := strings.LastIndex(output, ")"); end != -1 && end > start {
-			return output[start+1 : end]
+			carModel := output[start+1 : end]
+			// Remove any additional info after the car model
+			if idx := strings.Index(carModel, ","); idx != -1 {
+				carModel = carModel[:idx]
+			}
+			return strings.TrimSpace(carModel)
 		}
 	}
 	return ""
