@@ -6,9 +6,8 @@ ENV GO111MODULE=on
 ENV GOARCH=amd64
 ENV GOOS=linux
 
-COPY agones/go.mod .
-COPY agones/go.sum .
-COPY agones/main.go .
+# Copier tout le contenu du répertoire agones
+COPY agones/ .
 
 RUN go mod tidy
 RUN GOARCH=amd64 GOOS=linux go mod download
@@ -16,16 +15,14 @@ RUN GOARCH=amd64 GOOS=linux go build -o wrapper .
 RUN chmod +x ./wrapper
 
 # -------------------------------------------------------------------------------------------------
-# Steam Stage [arm64] - Dummy since Steam doesn't support arm64
+# Steam Stage Handling
+ARG TARGETARCH
+
+FROM --platform=$BUILDPLATFORM cm2network/steamcmd:latest AS steam-amd64
 FROM --platform=$BUILDPLATFORM scratch AS steam-arm64
 COPY docker/steamclient.not-supported /home/steam/steamcmd/linux64/
 
-# -------------------------------------------------------------------------------------------------
-# Steam Stage [amd64] - Download Steam client
-FROM --platform=$BUILDPLATFORM cm2network/steamcmd:latest AS steam-amd64
-
-FROM --platform=$BUILDPLATFORM steam-${TARGETARCH} AS steam
-ARG TARGETARCH
+FROM steam-${TARGETARCH} AS steam
 
 # -------------------------------------------------------------------------------------------------
 # Build Stage - Build AssettoServer
@@ -56,10 +53,14 @@ WORKDIR /app
 ARG STEAM_USERNAME
 ARG STEAM_PASSWORD
 
-# Copy Steam client
+# Create steam directory
 RUN mkdir -p /home/acserver/.steam/sdk64
+
+# Copy steam client from steam stage
 COPY --from=steam /home/steam/steamcmd/linux64/steamclient.* /home/acserver/.steam/sdk64/
-RUN chown -R acserver:acserver /home/acserver/.steam
+
+# Set proper permissions
+RUN chown -R acserver:acserver /home/acserver
 
 # Copy Agones SDK wrapper
 COPY --from=agones-sdk /app/wrapper .
@@ -83,6 +84,11 @@ RUN sed -i "s/\${STEAM_USERNAME}/${STEAM_USERNAME}/g" steam-script.txt && \
     sed -i "s/\${STEAM_PASSWORD}/${STEAM_PASSWORD}/g" steam-script.txt
 
 WORKDIR /data
+
+# Add steamclient.so fallback location
+RUN mkdir -p /app/AssettoServer/ && \
+    cp /home/acserver/.steam/sdk64/steamclient.so /app/AssettoServer/ && \
+    chmod +x /app/AssettoServer/steamclient.so
 
 # Switch to non-root user
 USER acserver

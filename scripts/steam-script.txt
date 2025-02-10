@@ -1,5 +1,5 @@
 @ShutdownOnFailedCommand 1
-@sSteamCmdForcePlatformType windows
+@sSteamCmdForcePlatformType linux
 force_install_dir ./assetto
 login ${STEAM_USERNAME} ${STEAM_PASSWORD}
 app_update 302550
