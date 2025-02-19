@@ -22,7 +22,7 @@ on:
 
 jobs:
     changes:
-        runs-on: ubuntu-latest
+        runs-on: self-hosted
         permissions:
             contents: read
             pull-requests: read
@@ -45,7 +45,7 @@ jobs:
             contains(github.ref, 'refs/tags/') ||
             needs.changes.outputs.game_server == 'true'
         name: Build Docker Image
-        runs-on: ubuntu-latest
+        runs-on: self-hosted
         permissions:
             contents: read
             packages: write

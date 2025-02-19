@@ -3,6 +3,13 @@
 # Enable verbose mode for debugging
 set -x
 
+while [ ! -f /shared-config/init_done ]; do
+    echo "Waiting for init_done file..."
+    sleep 1
+done
+
+echo "Init done file found, server booting..."
+
 # Check if steamclient.so exists
 if [ ! -f /home/acserver/.steam/sdk64/steamclient.so ]; then
     echo "steamclient.so not found in .steam/sdk64, checking fallback location..."
