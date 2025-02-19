@@ -1,18 +1,18 @@
 # Build Stage - Agones SDK wrapper
-FROM golang:1.22 AS agones-sdk
+#FROM golang:1.22 AS agones-sdk
 
-WORKDIR /app
-ENV GO111MODULE=on
-ENV GOARCH=amd64
-ENV GOOS=linux
+#WORKDIR /app
+#ENV GO111MODULE=on
+#ENV GOARCH=amd64
+#ENV GOOS=linux
 
 # Copier tout le contenu du répertoire agones
-COPY agones/ .
+#COPY agones/ .
 
-RUN go mod tidy
-RUN GOARCH=amd64 GOOS=linux go mod download
-RUN GOARCH=amd64 GOOS=linux go build -o wrapper .
-RUN chmod +x ./wrapper
+#RUN go mod tidy
+#RUN GOARCH=amd64 GOOS=linux go mod download
+#RUN GOARCH=amd64 GOOS=linux go build -o wrapper .
+#RUN chmod +x ./wrapper
 
 # -------------------------------------------------------------------------------------------------
 # Steam Stage Handling
@@ -63,7 +63,7 @@ COPY --from=steam /home/steam/steamcmd/linux64/steamclient.* /home/acserver/.ste
 RUN chown -R acserver:acserver /home/acserver
 
 # Copy Agones SDK wrapper
-COPY --from=agones-sdk /app/wrapper .
+#COPY --from=agones-sdk /app/wrapper .
 
 # Copy AssettoServer and set permissions
 COPY --from=build /app/out-linux-* ./AssettoServer/
@@ -93,5 +93,5 @@ RUN mkdir -p /app/AssettoServer/ && \
 # Switch to non-root user
 USER acserver
 
-ENTRYPOINT ["/app/wrapper", "-i", "/app/start-server.sh"]
+ENTRYPOINT ["/app/start-server.sh"]
 
