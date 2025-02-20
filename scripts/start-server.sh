@@ -40,6 +40,15 @@ find . -type d -exec chmod 755 {} \;
 # Make sure the server executable is executable
 chmod +x ./AssettoServer
 
+# DEBUG
+echo "DEBUG: Current directory:"
+pwd
+echo "DEBUG: Current directory contents:"
+ls -la
+
+echo "Check content of server_cfg.ini:"
+cat /cfg/server_cfg.ini
+
 # Start Assetto Corsa Server
 echo "Starting Assetto Corsa Server..."
 ./AssettoServer --plugins-from-workdir
