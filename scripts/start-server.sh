@@ -46,8 +46,11 @@ pwd
 echo "DEBUG: Current directory contents:"
 ls -la
 
-echo "Check content of server_cfg.ini:"
-cat /cfg/server_cfg.ini
+echo "[DEBUG] Check content of server_cfg.ini:"
+cat ./cfg/server_cfg.ini
+
+echo "[DEBUG] Check content of entry_list.ini:"
+cat ./cfg/entry_list.ini
 
 # Start Assetto Corsa Server
 echo "Starting Assetto Corsa Server..."
