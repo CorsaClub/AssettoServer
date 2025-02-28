@@ -1,0 +1,300 @@
+// Package main provides an Agones game server wrapper for Assetto Corsa Server.
+// It handles server lifecycle, health checking, metrics monitoring, and graceful shutdown.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"metrics/handlers"
+	"metrics/monitoring"
+	metrics "metrics/services"
+	"metrics/types"
+	"metrics/utils"
+	"metrics/victoria"
+)
+
+// interceptor implémente un io.Writer qui intercepte et transmet les données écrites
+type interceptor struct {
+	forward   io.Writer
+	intercept func(p []byte)
+}
+
+func (i *interceptor) Write(p []byte) (n int, err error) {
+	if i.intercept != nil {
+		i.intercept(p)
+	}
+	return i.forward.Write(p)
+}
+
+// main is the entry point of the application.
+// It initializes the Agones SDK, starts the Assetto Corsa server,
+// and manages the server's lifecycle including health checks and metrics.
+func main() {
+	// Configuration flags
+	input := flag.String("i", "./start-server.sh", "Path to server start script")
+	args := flag.String("args", "", "Arguments for the server")
+
+	victoriaUrl := os.Getenv("VICTORIA_URL")
+	victoriaPort := os.Getenv("VICTORIA_PORT")
+	victoriaUsername := os.Getenv("VICTORIA_USERNAME")
+	victoriaPassword := os.Getenv("VICTORIA_PASSWORD")
+
+	// Construire l'URL complète
+	var victoriaEndpoint string
+	if victoriaUrl != "" && victoriaPort != "" {
+		victoriaEndpoint = fmt.Sprintf("http://%s:%s", victoriaUrl, victoriaPort)
+	} else {
+		victoriaEndpoint = *flag.String("victoria-endpoint", "http://localhost:8428", "VictoriaMetrics endpoint")
+	}
+
+	flag.Parse()
+
+	// In main() function, after flag parsing
+	serverID := os.Getenv("GAMESERVER_ID") // Use Agones ID if running in Kubernetes
+	serverRegion := os.Getenv("GAMESERVER_REGION")
+	serverName := os.Getenv("SERVER_NAME")
+
+	if serverID == "" {
+		serverID = utils.GenerateServerID() // Fallback to generated ID
+	}
+
+	// Initialize server state with ID
+	serverState := &types.ServerState{
+		ServerID:         serverID,
+		ServerRegion:     serverRegion,
+		ServerName:       serverName,
+		ServerType:       os.Getenv("SERVER_TYPE"),
+		LastPing:         time.Now(),
+		ConnectedPlayers: make(map[string]*types.Player),
+		ActiveCars:       make(map[string]int),
+		CurrentSession: &types.Session{
+			Type: "initializing",
+		},
+	}
+
+	// Charger la configuration
+	config := &types.Config{
+		VictoriaMetrics: struct {
+			Endpoint    string        `json:"endpoint"`
+			MaxRetries  int           `json:"max_retries"`
+			BatchSize   int           `json:"batch_size"`
+			BatchPeriod time.Duration `json:"batch_period"`
+			Timeout     time.Duration `json:"timeout"`
+		}{
+			Endpoint:    victoriaEndpoint,
+			MaxRetries:  3,
+			BatchSize:   100,
+			BatchPeriod: 5 * time.Second,
+			Timeout:     10 * time.Second,
+		},
+		Logging: struct {
+			Directory   string   `json:"directory"`
+			Patterns    []string `json:"patterns"`
+			MaxFileSize int64    `json:"max_file_size"`
+			MaxFiles    int      `json:"max_files"`
+		}{
+			Directory:   "/var/log/acserver",
+			Patterns:    []string{"error.log", "server.log", "access.log"},
+			MaxFileSize: 100 * 1024 * 1024, // 100MB
+			MaxFiles:    10,
+		},
+	}
+
+	// Configuration du client Victoria avec timeouts et compression
+	clientConfig := victoria.ClientConfig{
+		RequestTimeout:  10 * time.Second,
+		ConnectTimeout:  5 * time.Second,
+		MaxRetryBackoff: 30 * time.Second,
+		Compression:     true,
+	}
+
+	vmClient := victoria.NewClient(
+		config.VictoriaMetrics.Endpoint,
+		victoriaUsername,
+		victoriaPassword,
+		clientConfig,
+	)
+
+	// Démarrer le monitoring avec gestion d'erreurs améliorée
+	logMonitor := monitoring.NewLogMonitor(
+		vmClient,
+		config.Logging.Directory,
+		monitoring.WithPatterns(config.Logging.Patterns),
+		monitoring.WithMaxFileSize(config.Logging.MaxFileSize),
+	)
+
+	// Démarrer les goroutines avec gestion appropriée
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go vmClient.StartMetricBuffer(ctx)
+	go logMonitor.Start(ctx)
+
+	// Start monitoring
+	go monitoring.MonitorHealthMetrics(ctx, vmClient, serverState)
+	go monitoring.MonitorSystemResources(ctx, serverState)
+
+	// Démarrer le monitoring des performances internes
+	go metrics.StartPerformanceMonitoring(ctx, vmClient)
+
+	// Prepare and start the server
+	serverReady := make(chan struct{}, 1)
+	cmd := prepareServerCommand(ctx, input, args, serverState, serverReady, vmClient)
+	if err := cmd.Start(); err != nil {
+		utils.LogError("Error Starting Cmd: %v", err)
+	}
+
+	// Handle termination signals
+	setupSignalHandler(cancel, serverState)
+
+	// Initialize HTTP server for health checks
+	initHealthServer(serverState)
+}
+
+// prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
+// It sets up output interception and command arguments.
+func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.Client) *exec.Cmd {
+	argsList := strings.Fields(*args)
+	cmd := exec.CommandContext(ctx, *input, argsList...)
+	cmd.Stderr = &interceptor{forward: os.Stderr}
+
+	cmd.Stdout = &interceptor{
+		forward: os.Stdout,
+		intercept: func(p []byte) {
+			str := strings.TrimSpace(string(p))
+			handlers.HandleServerOutput(str, vmClient, state, serverReady, nil)
+		},
+	}
+
+	return cmd
+}
+
+// waitForServerEnd waits for the server to signal readiness.
+// It returns an error if the server fails to become ready within the timeout period.
+func waitForServerEnd(ctx context.Context, serverReady chan struct{}, vmClient *victoria.Client, reserveDuration time.Duration) {
+	select {
+	case <-serverReady:
+		utils.LogSDK("Server reported ready")
+		vmClient.SendMetrics(types.MetricBatch{
+			Metrics: []types.Metric{
+				{
+					Name:        "server_ready",
+					Value:       1,
+					Type:        types.Gauge,
+					Timestamp:   time.Now(),
+					LabelValues: map[string]string{},
+				},
+			},
+			Time: time.Now(),
+		})
+	case <-ctx.Done():
+		utils.LogSDK("Context cancelled, initiating graceful shutdown")
+		return
+	}
+
+	// Add graceful shutdown handling
+	<-ctx.Done()
+	utils.LogSDK("Server shutdown initiated")
+	vmClient.SendMetrics(types.MetricBatch{
+		Metrics: []types.Metric{
+			{
+				Name:        "server_shutdown",
+				Value:       1,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: map[string]string{},
+			},
+		},
+		Time: time.Now(),
+	})
+}
+
+// setupSignalHandler configures signal handling for graceful shutdown.
+func setupSignalHandler(cancel context.CancelFunc, state *types.ServerState) {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		sig := <-sigChan
+		utils.LogSDK("Received signal %v, initiating shutdown", sig)
+
+		state.Lock()
+		state.ShuttingDown = true
+		state.Unlock()
+
+		cancel()
+	}()
+}
+
+// logEvent logs important events
+func logEvent(eventType string, message string, state *types.ServerState) {
+	sessionType := "unknown"
+	if state.CurrentSession != nil {
+		sessionType = state.CurrentSession.Type
+	}
+
+	log.Printf("[%s] %s | Server: %s | Players: %d | Session: %s",
+		eventType,
+		message,
+		state.ServerName,
+		state.Players,
+		sessionType)
+}
+
+// initHealthServer initializes and exposes health check endpoints
+func initHealthServer(state *types.ServerState) {
+	// Create a separate mux for health checks
+	healthMux := http.NewServeMux()
+
+	// Add HTTP health endpoint
+	healthMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		state.RLock()
+		defer state.RUnlock()
+
+		conditions := []struct {
+			check bool
+			msg   string
+		}{
+			{state.Ready, "Server not ready"},
+			{time.Since(state.LastPing) < 5*time.Second, "Health check timeout"},
+			{!state.ShuttingDown, "Server is shutting down"},
+		}
+
+		for _, condition := range conditions {
+			if !condition.check {
+				utils.LogWarning("Health check failed: %s", condition.msg)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte(condition.msg))
+				return
+			}
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	// Start HTTP server for health checks on a separate port
+	go func() {
+		server := &http.Server{
+			Addr:         ":9001",
+			Handler:      healthMux,
+			ReadTimeout:  5 * time.Second,
+			WriteTimeout: 5 * time.Second,
+		}
+
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			utils.LogError("HTTP health server error: %v", err)
+		}
+	}()
+}

@@ -15,7 +15,8 @@ type ServerState struct {
 	Allocated        bool               // Indicates if the server is currently allocated
 	ServerID         string             // Unique identifier of the server
 	ServerName       string             // Name of the server
-	ServerType       string             // Type of the server
+	ServerRegion     string             // Region of the server
+	ServerType       string             // Type of the server ( Public / Official / Private )
 	SessionType      string             // Type of the current session
 	SessionStart     time.Time          // Start time of the session
 	SessionTimeLeft  int                // Time left in the session (seconds)
@@ -79,14 +80,27 @@ const (
 
 // Config provides flexible configuration options for the server.
 type Config struct {
-	ServerScript    string        `json:"server_script"`     // Path to the server script
-	ServerArgs      string        `json:"server_args"`       // Arguments for the server script
-	ShutdownTimeout time.Duration `json:"shutdown_timeout"`  // Timeout for server shutdown
-	ReserveDuration time.Duration `json:"reserve_duration"`  // Duration to reserve the server
-	HealthCheckRate time.Duration `json:"health_check_rate"` // Rate for health checks
-	MetricsPort     int           `json:"metrics_port"`      // Port for exposing metrics
-	HealthPort      int           `json:"health_port"`       // Port for health checks
-	Debug           bool          `json:"debug"`             // Enable debug mode
+	// Server configuration
+	ServerScript    string        `json:"server_script"`
+	ServerArgs      string        `json:"server_args"`
+	ShutdownTimeout time.Duration `json:"shutdown_timeout"`
+
+	// Victoria Metrics configuration
+	VictoriaMetrics struct {
+		Endpoint    string        `json:"endpoint"`
+		MaxRetries  int           `json:"max_retries"`
+		BatchSize   int           `json:"batch_size"`
+		BatchPeriod time.Duration `json:"batch_period"`
+		Timeout     time.Duration `json:"timeout"`
+	} `json:"victoria_metrics"`
+
+	// Logging configuration
+	Logging struct {
+		Directory   string   `json:"directory"`
+		Patterns    []string `json:"patterns"`
+		MaxFileSize int64    `json:"max_file_size"`
+		MaxFiles    int      `json:"max_files"`
+	} `json:"logging"`
 }
 
 // LogEvent represents a structured log event with contextual information.
@@ -102,18 +116,23 @@ type LogEvent struct {
 	Error       string    `json:"error,omitempty"` // Error message, if any
 }
 
-// GameServerSDK defines the interface for interacting with the game server.
-type GameServerSDK interface {
-	Health() error                                      // Perform a health check
-	Ready() error                                       // Mark the server as ready
-	Shutdown() error                                    // Shutdown the server
-	SetLabel(key, value string) error                   // Set a label on the server
-	SetAnnotation(key, value string) error              // Set an annotation on the server
-	GameServer() (interface{}, error)                   // Retrieve the game server information
-	Reserve(seconds int64) error                        // Reserve the server for a duration
-	Allocate() error                                    // Allocate the server
-	WatchGameServer(func(gameServer interface{})) error // Watch for game server updates
-	Alpha() interface{}                                 // Access to experimental features
-	Connect() error                                     // Connect to the SDK
-	Close() error                                       // Close the SDK connection
+// LogEntry represents a structured log entry
+type LogEntry struct {
+	Timestamp  time.Time         `json:"timestamp"`
+	Level      string            `json:"level"`
+	Message    string            `json:"message"`
+	Labels     map[string]string `json:"labels"`
+	ServerID   string            `json:"server_id"`
+	SessionID  string            `json:"session_id"`
+	PlayerID   string            `json:"player_id,omitempty"`
+	PlayerName string            `json:"player_name,omitempty"`
+	EventType  string            `json:"event_type,omitempty"`
+	Error      string            `json:"error,omitempty"`
 }
+
+// Log levels
+const (
+	LogLevelInfo    = "info"
+	LogLevelWarning = "warning"
+	LogLevelError   = "error"
+)

@@ -8,17 +8,15 @@ import (
 	"strings"
 	"time"
 
-	sdk "agones.dev/agones/sdks/go"
-	"github.com/prometheus/client_golang/prometheus"
-
-	"agones/metrics"
-	"agones/types"
-	"agones/utils"
+	metrics "metrics/services"
+	"metrics/types"
+	"metrics/utils"
+	"metrics/victoria"
 )
 
 // HandleServerOutput processes server output and updates metrics.
 // It handles various server events based on the output string.
-func HandleServerOutput(output string, s *sdk.SDK, state *types.ServerState, serverReady chan struct{}, cancel context.CancelFunc) {
+func HandleServerOutput(output string, vmClient *victoria.Client, state *types.ServerState, serverReady chan struct{}, cancel context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -26,12 +24,18 @@ func HandleServerOutput(output string, s *sdk.SDK, state *types.ServerState, ser
 		if r := recover(); r != nil {
 			utils.LogError("Recovered from panic in HandleServerOutput: %v", r)
 			// Notify metrics of a critical error
-			metrics.ServerErrorsCounter.With(prometheus.Labels{
-				"server_id":   state.ServerID,
-				"server_name": state.ServerName,
-				"server_type": state.ServerType,
-				"error_type":  "panic",
-			}).Inc()
+			vmClient.SendMetrics(types.MetricBatch{
+				Metrics: []types.Metric{
+					{
+						Name:        "assetto_server_errors_total",
+						Value:       1,
+						Type:        types.Counter,
+						LabelValues: map[string]string{"server_id": state.ServerID, "session_id": state.CurrentSession.ID, "session_type": state.CurrentSession.Type, "error_type": "panic"},
+						Timestamp:   time.Now(),
+					},
+				},
+				Time: time.Now(),
+			})
 		}
 	}()
 
@@ -46,7 +50,7 @@ func HandleServerOutput(output string, s *sdk.SDK, state *types.ServerState, ser
 	}
 
 	// Common labels for all metrics
-	baseLabels := prometheus.Labels{
+	baseLabels := map[string]string{
 		"server_id":   state.ServerID,
 		"server_name": state.ServerName,
 		"server_type": state.ServerType,
@@ -64,18 +68,42 @@ func HandleServerOutput(output string, s *sdk.SDK, state *types.ServerState, ser
 			handleExtraCSPFeatures(output, state, baseLabels)
 		case strings.Contains(output, "Starting Assetto Corsa Server..."):
 			handleServerStarting(state, baseLabels)
+			vmClient.LogEvent(metrics.LogLevelInfo, "Server starting", metrics.EventServerStart, nil)
 		case strings.Contains(output, "Lobby registration successful"):
 			handleServerReady(state, baseLabels, serverReady)
 		case strings.Contains(output, "End of session"):
-			handleSessionEnd(s, state, baseLabels, cancel)
+			handleSessionEnd(vmClient, state, baseLabels, cancel)
 		case strings.Contains(output, "has connected"):
-			handlePlayerConnect(s, state, output, baseLabels)
+			handlePlayerConnect(state, vmClient, output, baseLabels)
+			player := utils.ExtractPlayerInfo(output)
+			vmClient.LogEvent(metrics.LogLevelInfo,
+				fmt.Sprintf("Player %s connected", player.Name),
+				metrics.EventPlayerConnect,
+				map[string]string{
+					"player_id":   player.SteamID,
+					"player_name": player.Name,
+					"car_model":   player.CarModel,
+				})
 		case strings.Contains(output, "has disconnected"):
-			handlePlayerDisconnect(s, state, output, baseLabels)
+			handlePlayerDisconnect(state, vmClient, output, baseLabels)
+			steamID := utils.ExtractSteamID(output)
+			vmClient.LogEvent(metrics.LogLevelInfo,
+				fmt.Sprintf("Player disconnected (Steam ID: %s)", steamID),
+				metrics.EventPlayerDisconnect,
+				map[string]string{"player_id": steamID})
 		case strings.Contains(output, "Next session:"):
 			handleSessionChange(state, output, baseLabels)
+			sessionType := utils.ExtractSessionType(output)
+			vmClient.LogEvent(metrics.LogLevelInfo,
+				fmt.Sprintf("Session changed to %s", sessionType),
+				metrics.EventSessionChange,
+				map[string]string{"session_type": sessionType})
 		case strings.Contains(output, "[ERR]"):
 			handleError(fmt.Errorf(output), "server_error", state, baseLabels)
+			vmClient.LogEvent(metrics.LogLevelError,
+				output,
+				metrics.EventError,
+				nil)
 		case strings.Contains(output, "Steam authentication succeeded"):
 			handleSteamAuth(state, baseLabels)
 		case strings.Contains(output, "Network stats"):
@@ -157,7 +185,7 @@ func StartNewSession(state *types.ServerState, sessionType, track string) {
 }
 
 // handleServerStarting manages the server startup process and updates metrics accordingly.
-func handleServerStarting(state *types.ServerState, labels prometheus.Labels) {
+func handleServerStarting(state *types.ServerState, labels map[string]string) {
 	utils.LogSDK("Server starting up...")
 	state.Lock()
 	state.Ready = false
@@ -168,7 +196,7 @@ func handleServerStarting(state *types.ServerState, labels prometheus.Labels) {
 }
 
 // handleServerReady updates the server state to ready and signals readiness.
-func handleServerReady(state *types.ServerState, labels prometheus.Labels, serverReady chan struct{}) {
+func handleServerReady(state *types.ServerState, labels map[string]string, serverReady chan struct{}) {
 	state.Lock()
 	if state.Ready {
 		state.Unlock()
@@ -188,7 +216,7 @@ func handleServerReady(state *types.ServerState, labels prometheus.Labels, serve
 }
 
 // handleSessionEnd handles the end of a game session by kicking all players and initiating a graceful shutdown.
-func handleSessionEnd(s *sdk.SDK, state *types.ServerState, labels prometheus.Labels, cancel context.CancelFunc) {
+func handleSessionEnd(vmClient *victoria.Client, state *types.ServerState, labels map[string]string, cancel context.CancelFunc) {
 	state.Lock()
 	if state.ShuttingDown {
 		state.Unlock()
@@ -205,14 +233,22 @@ func handleSessionEnd(s *sdk.SDK, state *types.ServerState, labels prometheus.La
 	state.Unlock()
 
 	utils.LogSDK("Session ended, initiating server shutdown")
-	metrics.ServerStateGauge.With(labels).Set(types.ServerStateShutdown)
-	metrics.SessionEndCounter.With(labels).Inc()
-	metrics.PlayersGauge.With(labels).Set(0) // Reset player count to 0
-	gracefulShutdown(s, cancel, state)
+	vmClient.SendMetrics(types.MetricBatch{
+		Metrics: []types.Metric{
+			{
+				Name:        "assetto_server_state",
+				Value:       float64(types.ServerStateShutdown),
+				Type:        types.Gauge,
+				LabelValues: labels,
+				Timestamp:   time.Now(),
+			},
+		},
+		Time: time.Now(),
+	})
 }
 
 // handlePlayerConnect processes a player's connection, updates player counts, and increments relevant metrics.
-func handlePlayerConnect(s *sdk.SDK, state *types.ServerState, output string, labels prometheus.Labels) {
+func handlePlayerConnect(state *types.ServerState, vmClient *victoria.Client, output string, labels map[string]string) {
 	// Extract player info using the utility function
 	player := utils.ExtractPlayerInfo(output)
 	if player.SteamID == "" {
@@ -227,7 +263,7 @@ func handlePlayerConnect(s *sdk.SDK, state *types.ServerState, output string, la
 	metrics.PlayerConnectCounter.With(labels).Inc()
 
 	// Create player-specific labels by copying base labels and adding player info
-	playerLabels := prometheus.Labels{
+	playerLabels := map[string]string{
 		"server_id":   labels["server_id"],
 		"server_name": labels["server_name"],
 		"server_type": labels["server_type"],
@@ -240,23 +276,23 @@ func handlePlayerConnect(s *sdk.SDK, state *types.ServerState, output string, la
 	metrics.PlayerLatencyGauge.With(playerLabels).Set(float64(player.Latency))
 	metrics.CarUsageCounter.With(playerLabels).Inc()
 
-	updatePlayerCount(s, state.Players)
+	updatePlayerCount(state, vmClient)
 }
 
 // handlePlayerDisconnect processes a player's disconnection and updates relevant metrics.
-func handlePlayerDisconnect(s *sdk.SDK, state *types.ServerState, output string, labels prometheus.Labels) {
+func handlePlayerDisconnect(state *types.ServerState, vmClient *victoria.Client, output string, labels map[string]string) {
 	steamID := utils.ExtractSteamID(output)
 	removePlayer(state, steamID)
 
 	metrics.PlayersGauge.With(labels).Set(float64(state.Players))
 	metrics.PlayerDisconnectCounter.With(labels).Inc()
-	updatePlayerCount(s, state.Players)
+	updatePlayerCount(state, vmClient)
 
 	utils.LogSDK("Player disconnected: %s", steamID)
 }
 
 // handleSessionChange manages changes to the game session, such as switching tracks or session types.
-func handleSessionChange(state *types.ServerState, output string, labels prometheus.Labels) {
+func handleSessionChange(state *types.ServerState, output string, labels map[string]string) {
 	logEvent("SESSION_CHANGE", "Session change detected", state)
 	sessionType := utils.ExtractSessionType(output)
 	track := utils.ExtractTrackName(output)
@@ -274,10 +310,7 @@ func handleSessionChange(state *types.ServerState, output string, labels prometh
 
 	if oldSession != nil {
 		sessionDuration := time.Since(oldSession.StartTime)
-		metrics.SessionDurationHistogram.With(prometheus.Labels{
-			"session_type": oldSession.Type,
-			"track":        oldSession.Track,
-		}).Observe(sessionDuration.Seconds())
+		metrics.SessionDurationHistogram.With(labels).Observe(sessionDuration.Seconds())
 	}
 
 	metrics.SessionChangeCounter.With(labels).Inc()
@@ -287,13 +320,13 @@ func handleSessionChange(state *types.ServerState, output string, labels prometh
 }
 
 // handleSteamAuth records successful Steam authentication events.
-func handleSteamAuth(_ *types.ServerState, labels prometheus.Labels) {
+func handleSteamAuth(state *types.ServerState, labels map[string]string) {
 	utils.LogSDK("Steam authentication successful for player")
 	metrics.AuthSuccessCounter.With(labels).Inc()
 }
 
 // handleNetworkStats updates network-related metrics based on the server output.
-func handleNetworkStats(output string, labels prometheus.Labels) {
+func handleNetworkStats(output string, labels map[string]string) {
 	if bytesReceived := utils.ExtractBytesReceived(output); bytesReceived > 0 {
 		metrics.NetworkBytesReceivedCounter.With(labels).Add(float64(bytesReceived))
 	}
@@ -305,7 +338,7 @@ func handleNetworkStats(output string, labels prometheus.Labels) {
 }
 
 // handleError logs server errors and updates the error metrics accordingly.
-func handleError(err error, errorType string, _ *types.ServerState, labels prometheus.Labels) {
+func handleError(err error, errorType string, state *types.ServerState, labels map[string]string) {
 	utils.LogError("(%s): %v", errorType, err)
 	errorLabels := copyLabels(labels)
 	errorLabels["error_type"] = errorType
@@ -315,19 +348,31 @@ func handleError(err error, errorType string, _ *types.ServerState, labels prome
 }
 
 // copyLabels creates and returns a copy of the provided Prometheus labels.
-func copyLabels(labels prometheus.Labels) prometheus.Labels {
-	newLabels := make(prometheus.Labels)
+func copyLabels(labels map[string]string) map[string]string {
+	newLabels := make(map[string]string)
 	for k, v := range labels {
 		newLabels[k] = v
 	}
 	return newLabels
 }
 
-// updatePlayerCount updates the player count annotation in the SDK.
-func updatePlayerCount(s *sdk.SDK, count int) {
-	if err := s.SetAnnotation("players", fmt.Sprintf("%d", count)); err != nil {
-		utils.LogWarning("Failed to update players annotation: %v", err)
-	}
+// updatePlayerCount updates the player count metric in VictoriaMetrics
+func updatePlayerCount(state *types.ServerState, vmClient *victoria.Client) {
+	vmClient.SendMetrics(types.MetricBatch{
+		Metrics: []types.Metric{
+			{
+				Name:  "assetto_server_connected_players",
+				Value: float64(state.Players),
+				Type:  types.Gauge,
+				LabelValues: map[string]string{
+					"server_id":    state.ServerID,
+					"session_id":   state.CurrentSession.ID,
+					"session_type": state.CurrentSession.Type,
+				},
+			},
+		},
+		Time: time.Now(),
+	})
 }
 
 // logEvent logs an event with contextual information about the server state.
@@ -366,14 +411,11 @@ func removePlayer(state *types.ServerState, steamID string) {
 }
 
 // gracefulShutdown performs a graceful shutdown of the server by updating the state and notifying the SDK.
-func gracefulShutdown(s *sdk.SDK, cancel context.CancelFunc, state *types.ServerState) {
+func gracefulShutdown(cancel context.CancelFunc, state *types.ServerState) {
 	state.Lock()
 	state.ShuttingDown = true
 	state.Unlock()
 
-	if err := s.Shutdown(); err != nil {
-		utils.LogWarning("Could not send shutdown message: %v", err)
-	}
 	time.Sleep(time.Second)
 	cancel()
 
@@ -381,37 +423,32 @@ func gracefulShutdown(s *sdk.SDK, cancel context.CancelFunc, state *types.Server
 }
 
 // handleSteamError handles Steam-related errors and updates the error metrics accordingly.
-func handleSteamError(output string, state *types.ServerState, _ prometheus.Labels) {
+func handleSteamError(output string, state *types.ServerState, labels map[string]string) {
 	if strings.Contains(output, "SteamAPI_Init") || strings.Contains(output, "steamclient.so") {
 		utils.LogWarning("Steam initialization warning: %s", output)
-		metrics.ServerErrorsCounter.With(prometheus.Labels{
-			"server_id":   state.ServerID,
-			"server_name": state.ServerName,
-			"server_type": state.ServerType,
-			"error_type":  "steam_init",
-		}).Inc()
+		metrics.ServerErrorsCounter.With(labels).Inc()
 	}
 }
 
 // handleServerVersion handles server version-related events and updates metrics accordingly.
-func handleServerVersion(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleServerVersion(output string, _ *types.ServerState, _ map[string]string) {
 	//version := extractVersion(output)
 	//utils.LogSDK("Server version: %s", version)
 }
 
 // handleConfigLoading handles server configuration loading-related events and updates metrics accordingly.
-func handleConfigLoading(output string, state *types.ServerState, labels prometheus.Labels) {
+func handleConfigLoading(output string, state *types.ServerState, labels map[string]string) {
 	//configFile := extractConfigFile(output)
 	metrics.ServerErrorsCounter.With(labels).Inc()
 }
 
 // handlePluginLoading handles server plugin loading-related events and updates metrics accordingly.
-func handlePluginLoading(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handlePluginLoading(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
 // handleAISlotUpdate handles server AI slot update-related events and updates metrics accordingly.
-func handleAISlotUpdate(output string, state *types.ServerState, labels prometheus.Labels) {
+func handleAISlotUpdate(output string, state *types.ServerState, labels map[string]string) {
 	// Extract AI slot information
 	slots := utils.ExtractAISlots(output)
 	state.Lock()
@@ -419,7 +456,7 @@ func handleAISlotUpdate(output string, state *types.ServerState, labels promethe
 	state.Unlock()
 
 	// Ensure all required labels are present
-	aiLabels := prometheus.Labels{
+	aiLabels := map[string]string{
 		"server_id":   labels["server_id"],
 		"server_name": labels["server_name"],
 		"server_type": labels["server_type"],
@@ -431,7 +468,7 @@ func handleAISlotUpdate(output string, state *types.ServerState, labels promethe
 }
 
 // handleChecksumUpdate handles server checksum update-related events and updates metrics accordingly.
-func handleChecksumUpdate(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleChecksumUpdate(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
@@ -460,13 +497,13 @@ func extractChecksumAsset(output string) string {
 }
 
 // handleServerInvite handles server invite-related events
-func handleServerInvite(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleServerInvite(output string, _ *types.ServerState, _ map[string]string) {
 	//url := strings.Split(output, "Server invite link:")[1]
 	//utils.LogSDK("Server invite URL available: %s", strings.TrimSpace(url))
 }
 
 // handleSessionSwitch handles session switch-related events and updates metrics accordingly.
-func handleSessionSwitch(output string, state *types.ServerState, _ prometheus.Labels) {
+func handleSessionSwitch(output string, state *types.ServerState, _ map[string]string) {
 	sessionID := extractSessionID(output)
 	//utils.LogSDK("Switching to session ID: %s", sessionID)
 	state.Lock()
@@ -477,27 +514,27 @@ func handleSessionSwitch(output string, state *types.ServerState, _ prometheus.L
 }
 
 // handleTCPServer handles TCP server-related events
-func handleTCPServer(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleTCPServer(output string, _ *types.ServerState, _ map[string]string) {
 	port := strings.Split(output, "port")[1]
 	//utils.LogSDK("Starting TCP server on port%s", port)
-	metrics.ServerPortsGauge.With(prometheus.Labels{
+	metrics.ServerPortsGauge.With(map[string]string{
 		"port_type": "tcp",
 		"port":      strings.TrimSpace(port),
 	}).Set(1)
 }
 
 // handleUDPServer handles UDP server-related events
-func handleUDPServer(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleUDPServer(output string, _ *types.ServerState, _ map[string]string) {
 	port := strings.Split(output, "port")[1]
 	//utils.LogSDK("Starting UDP server on port%s", port)
-	metrics.ServerPortsGauge.With(prometheus.Labels{
+	metrics.ServerPortsGauge.With(map[string]string{
 		"port_type": "udp",
 		"port":      strings.TrimSpace(port),
 	}).Set(1)
 }
 
 // handleSessionTime handles session time-related events and updates metrics accordingly.
-func handleSessionTime(output string, state *types.ServerState, _ prometheus.Labels) {
+func handleSessionTime(output string, state *types.ServerState, _ map[string]string) {
 	duration := strings.Split(output, "session :")[1]
 	//utils.LogSDK("Remaining time of session :%s", duration)
 	state.Lock()
@@ -508,18 +545,18 @@ func handleSessionTime(output string, state *types.ServerState, _ prometheus.Lab
 }
 
 // handleLobbyRegistration handles lobby registration-related events
-func handleLobbyRegistration(_ string, _ *types.ServerState, _ prometheus.Labels) {
+func handleLobbyRegistration(_ string, _ *types.ServerState, _ map[string]string) {
 	utils.LogSDK("LOBBY REGISTRATION : OK - Approved by SDK")
 }
 
 // handleUpdateLoop handles update loop-related events
-func handleUpdateLoop(output string, _ *types.ServerState, labels prometheus.Labels) {
+func handleUpdateLoop(output string, _ *types.ServerState, labels map[string]string) {
 	rate := strings.Split(output, "rate of")[1]
 	metrics.ServerUpdateRateGauge.With(labels).Set(parseUpdateRate(rate))
 }
 
 // handleLobbySuccess handles lobby success-related events
-func handleLobbySuccess(_ string, _ *types.ServerState, labels prometheus.Labels) {
+func handleLobbySuccess(_ string, _ *types.ServerState, labels map[string]string) {
 	metrics.LobbyRegistrationCounter.With(labels).Inc()
 }
 
@@ -540,76 +577,76 @@ func parseUpdateRate(rate string) float64 {
 }
 
 // handleCSPVersion handles CSP version information
-func handleCSPVersion(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleCSPVersion(output string, _ *types.ServerState, _ map[string]string) {
 	//version := strings.Split(output, "Version")[1]
 	//utils.LogSDK("Using minimum required CSP Version %s", strings.TrimSpace(version))
 }
 
 // handleAISpline handles AI spline cache events
-func handleAISpline(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleAISpline(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
 // handleAILaneDetection handles AI lane detection events
-func handleAILaneDetection(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleAILaneDetection(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
 // handleAISplineCache handles AI spline caching events
-func handleAISplineCache(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleAISplineCache(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
 // handleAISplineMapping handles AI spline mapping events
-func handleAISplineMapping(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleAISplineMapping(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
 // handleKeysStorage handles key storage events
-func handleKeysStorage(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleKeysStorage(output string, _ *types.ServerState, _ map[string]string) {
 	utils.LogWarning(output)
 }
 
 // handleXMLEncryption handles XML encryption configuration events
-func handleXMLEncryption(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleXMLEncryption(output string, _ *types.ServerState, _ map[string]string) {
 	utils.LogWarning(output)
 }
 
 // handleBlacklistLoading handles blacklist loading events
-func handleBlacklistLoading(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleBlacklistLoading(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
 // handleWhitelistLoading handles whitelist loading events
-func handleWhitelistLoading(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleWhitelistLoading(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
 // handleAdminsLoading handles admin list loading events
-func handleAdminsLoading(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleAdminsLoading(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
 // handleSteamConnection handles Steam connection events
-func handleSteamConnection(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleSteamConnection(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
-func handleAttemptingToConnect(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleAttemptingToConnect(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
-func handleExtraCSPFeatures(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleExtraCSPFeatures(output string, _ *types.ServerState, _ map[string]string) {
 	// Don't log anything
 }
 
-func handleCSPHandshake(output string, state *types.ServerState, labels prometheus.Labels) {
+func handleCSPHandshake(output string, state *types.ServerState, labels map[string]string) {
 	if strings.Contains(output, "Version=") {
 		version := utils.ExtractCSPVersion(output)
 		playerName := utils.ExtractCSPPlayerName(output)
 
 		// S'assurer que tous les labels requis sont présents
-		cspLabels := prometheus.Labels{
+		cspLabels := map[string]string{
 			"server_id":   labels["server_id"],
 			"server_name": labels["server_name"],
 			"server_type": labels["server_type"],
@@ -620,12 +657,12 @@ func handleCSPHandshake(output string, state *types.ServerState, labels promethe
 	}
 }
 
-func handleChatMessage(_ string, _ *types.ServerState, labels prometheus.Labels) {
+func handleChatMessage(_ string, _ *types.ServerState, labels map[string]string) {
 	// Optional: track chat messages if necessary
 	metrics.ChatMessagesCounter.With(labels).Inc()
 }
 
-func handleCleanExit(output string, _ *types.ServerState, _ prometheus.Labels) {
+func handleCleanExit(output string, _ *types.ServerState, _ map[string]string) {
 	steamID := utils.ExtractSteamID(output)
 	utils.LogDebug("Clean exit received for player with Steam ID: %s", steamID)
 }

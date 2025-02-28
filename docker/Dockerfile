@@ -1,18 +1,18 @@
-# Build Stage - Agones SDK wrapper
-#FROM golang:1.22 AS agones-sdk
+# Build Stage - VictoriaMetrics wrapper
+FROM golang:1.22 AS victoria-metrics
 
-#WORKDIR /app
-#ENV GO111MODULE=on
-#ENV GOARCH=amd64
-#ENV GOOS=linux
+WORKDIR /app
+ENV GO111MODULE=on
+ENV GOARCH=amd64
+ENV GOOS=linux
 
-# Copier tout le contenu du répertoire agones
-#COPY agones/ .
+# Copier tout le contenu du répertoire metrics
+COPY metrics/ .
 
-#RUN go mod tidy
-#RUN GOARCH=amd64 GOOS=linux go mod download
-#RUN GOARCH=amd64 GOOS=linux go build -o wrapper .
-#RUN chmod +x ./wrapper
+RUN go mod tidy
+RUN GOARCH=amd64 GOOS=linux go mod download
+RUN GOARCH=amd64 GOOS=linux go build -o wrapper .
+RUN chmod +x ./wrapper
 
 # -------------------------------------------------------------------------------------------------
 # Steam Stage Handling
@@ -62,16 +62,19 @@ COPY --from=steam /home/steam/steamcmd/linux64/steamclient.* /home/acserver/.ste
 # Set proper permissions
 RUN chown -R acserver:acserver /home/acserver
 
-# Copy Agones SDK wrapper
-#COPY --from=agones-sdk /app/wrapper .
+# Copy VictoriaMetrics wrapper
+COPY --from=victoria-metrics /app/wrapper .
 
 # Copy AssettoServer and set permissions
 COPY --from=build /app/out-linux-* ./AssettoServer/
 
 # Create shared-config directory with proper permissions
 RUN mkdir -p /shared-config && \
+    mkdir -p /var/log/acserver && \
     chown -R acserver:acserver /app /shared-config && \
+    chown -R acserver:acserver /var/log/acserver && \
     chmod -R 755 /app /shared-config && \
+    chmod -R 755 /var/log/acserver && \
     chmod +x /app/AssettoServer/AssettoServer
 
 # Copy startup scripts
@@ -83,6 +86,9 @@ COPY scripts/steam-script.txt .
 RUN sed -i "s/\${STEAM_USERNAME}/${STEAM_USERNAME}/g" steam-script.txt && \
     sed -i "s/\${STEAM_PASSWORD}/${STEAM_PASSWORD}/g" steam-script.txt
 
+# Create log volume
+VOLUME ["/var/log/acserver"]
+
 WORKDIR /data
 
 # Add steamclient.so fallback location
@@ -90,8 +96,19 @@ RUN mkdir -p /app/AssettoServer/ && \
     cp /home/acserver/.steam/sdk64/steamclient.so /app/AssettoServer/ && \
     chmod +x /app/AssettoServer/steamclient.so
 
+# Supprimer les ARG et garder uniquement les ENV avec valeurs par défaut
+ENV GAMESERVER_ID=Unknown
+ENV GAMESERVER_REGION=Unknown
+ENV SERVER_NAME=Unknown
+ENV SERVER_TYPE=Private
+
+ENV VICTORIA_URL=localhost
+ENV VICTORIA_PORT=8428
+ENV VICTORIA_USERNAME=username
+ENV VICTORIA_PASSWORD=password
+
 # Switch to non-root user
 USER acserver
 
-ENTRYPOINT ["/app/start-server.sh"]
+ENTRYPOINT ["/app/wrapper", "-i", "/app/start-server.sh"]
 

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"agones/types"
+	"metrics/types"
 )
 
 // ExtractPlayerInfo extracts player information from server output.

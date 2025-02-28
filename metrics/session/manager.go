@@ -2,7 +2,7 @@
 package session
 
 import (
-	"agones/types"
+	"metrics/types"
 	"sync"
 	"time"
 )
