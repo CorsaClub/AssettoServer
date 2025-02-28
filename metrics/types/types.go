@@ -136,3 +136,12 @@ const (
 	LogLevelWarning = "warning"
 	LogLevelError   = "error"
 )
+
+// Ajout d'un type pour les logs
+type Log struct {
+	Timestamp time.Time         `json:"timestamp"`
+	Level     string            `json:"level"`
+	Message   string            `json:"message"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	Source    string            `json:"source"`
+}

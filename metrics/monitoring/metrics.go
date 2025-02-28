@@ -7,10 +7,32 @@ import (
 	"metrics/victoria"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-func MonitorMetrics(ctx context.Context, vmClient *victoria.Client, state *types.ServerState) {
+// Add new monitoring metrics
+const (
+	// Existing metrics...
+
+	// Enhanced monitoring metrics
+	MetricDroppedTotal       = "assetto_metrics_dropped_total"
+	MetricBufferUsage        = "assetto_metrics_buffer_usage"
+	MetricBatchSizeHistogram = "assetto_metrics_batch_size"
+	MetricProcessingDuration = "assetto_metrics_processing_duration_seconds"
+	MetricValidationErrors   = "assetto_metrics_validation_errors_total"
+	MetricSendQueueSize      = "assetto_metrics_send_queue_size"
+	MetricRetryCount         = "assetto_metrics_retry_count_total"
+	MetricCompressionRatio   = "assetto_metrics_compression_ratio"
+)
+
+func MonitorMetrics(ctx context.Context, vmClient *victoria.MetricsClient, state *types.ServerState) {
+	// Start internal monitoring
+	go MonitorMetricsInternals(ctx, vmClient)
+
+	// Start performance monitoring
+	go MonitorMetricsPerformance(ctx, vmClient)
+
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
@@ -19,6 +41,8 @@ func MonitorMetrics(ctx context.Context, vmClient *victoria.Client, state *types
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			start := time.Now()
+
 			// Collecter les métriques du serveur
 			metrics := []types.Metric{
 				{
@@ -71,16 +95,28 @@ func MonitorMetrics(ctx context.Context, vmClient *victoria.Client, state *types
 			}
 			state.RUnlock()
 
-			// Envoyer les métriques
-			vmClient.SendMetrics(types.MetricBatch{
+			// Add processing duration metric
+			metrics = append(metrics, types.Metric{
+				Name:      MetricProcessingDuration,
+				Value:     time.Since(start).Seconds(),
+				Type:      types.Gauge,
+				Timestamp: time.Now(),
+			})
+
+			// Send metrics and track
+			if err := vmClient.SendMetrics(types.MetricBatch{
 				Metrics: metrics,
 				Time:    time.Now(),
-			})
+			}); err != nil {
+				incrementDroppedMetrics()
+			} else {
+				incrementProcessedMetrics()
+			}
 		}
 	}
 }
 
-func MonitorMetricsSystem(ctx context.Context, vmClient *victoria.Client) {
+func MonitorMetricsSystem(ctx context.Context, vmClient *victoria.MetricsClient) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -132,10 +168,10 @@ type ErrorMonitor struct {
 	sync.RWMutex
 	errors     map[string]int
 	thresholds map[string]int
-	client     *victoria.Client
+	client     *victoria.MetricsClient
 }
 
-func NewErrorMonitor(client *victoria.Client) *ErrorMonitor {
+func NewErrorMonitor(client *victoria.MetricsClient) *ErrorMonitor {
 	return &ErrorMonitor{
 		errors: make(map[string]int),
 		thresholds: map[string]int{
@@ -177,4 +213,138 @@ func (em *ErrorMonitor) RecordError(errorType string, err error) {
 		// Réinitialiser le compteur
 		em.errors[errorType] = 0
 	}
+}
+
+// Add monitoring functions
+func MonitorMetricsInternals(ctx context.Context, vmClient *victoria.MetricsClient) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Monitor internal metrics
+			metrics := []types.Metric{
+				{
+					Name:      MetricBufferUsage,
+					Value:     float64(len(vmClient.Buffer())) / float64(cap(vmClient.Buffer())),
+					Type:      types.Gauge,
+					Timestamp: time.Now(),
+					LabelValues: map[string]string{
+						"type": "send_buffer",
+					},
+				},
+				{
+					Name:      MetricSendQueueSize,
+					Value:     float64(len(vmClient.Buffer())),
+					Type:      types.Gauge,
+					Timestamp: time.Now(),
+				},
+			}
+
+			// Add error metrics from registry
+			for _, errType := range []string{
+				victoria.ErrCodeValidation,
+				victoria.ErrCodeConnection,
+				victoria.ErrCodeAuthentication,
+				victoria.ErrCodeRateLimit,
+				victoria.ErrCodeTimeout,
+			} {
+				metrics = append(metrics, types.Metric{
+					Name:      MetricValidationErrors,
+					Value:     float64(vmClient.GetErrorCount(errType)),
+					Type:      types.Counter,
+					Timestamp: time.Now(),
+					LabelValues: map[string]string{
+						"error_type": errType,
+					},
+				})
+			}
+
+			// Send internal monitoring metrics
+			vmClient.SendMetrics(types.MetricBatch{
+				Metrics: metrics,
+				Time:    time.Now(),
+			})
+		}
+	}
+}
+
+// Add performance monitoring
+func MonitorMetricsPerformance(ctx context.Context, vmClient *victoria.MetricsClient) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	var (
+		lastProcessedCount int64
+		lastDroppedCount   int64
+		lastRetryCount     int64
+	)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Get current counts
+			currentProcessed := atomic.LoadInt64(&processedMetrics)
+			currentDropped := atomic.LoadInt64(&droppedMetrics)
+			currentRetries := atomic.LoadInt64(&retryCount)
+
+			// Calculate rates
+			metrics := []types.Metric{
+				{
+					Name:      "assetto_metrics_processed_rate",
+					Value:     float64(currentProcessed - lastProcessedCount),
+					Type:      types.Gauge,
+					Timestamp: time.Now(),
+				},
+				{
+					Name:      "assetto_metrics_dropped_rate",
+					Value:     float64(currentDropped - lastDroppedCount),
+					Type:      types.Gauge,
+					Timestamp: time.Now(),
+				},
+				{
+					Name:      "assetto_metrics_retry_rate",
+					Value:     float64(currentRetries - lastRetryCount),
+					Type:      types.Gauge,
+					Timestamp: time.Now(),
+				},
+			}
+
+			// Update last counts
+			lastProcessedCount = currentProcessed
+			lastDroppedCount = currentDropped
+			lastRetryCount = currentRetries
+
+			// Send performance metrics
+			vmClient.SendMetrics(types.MetricBatch{
+				Metrics: metrics,
+				Time:    time.Now(),
+			})
+		}
+	}
+}
+
+// Add atomic counters for tracking
+var (
+	processedMetrics int64
+	droppedMetrics   int64
+	retryCount       int64
+)
+
+// Add helper functions to increment counters
+func incrementProcessedMetrics() {
+	atomic.AddInt64(&processedMetrics, 1)
+}
+
+func incrementDroppedMetrics() {
+	atomic.AddInt64(&droppedMetrics, 1)
+}
+
+func incrementRetryCount() {
+	atomic.AddInt64(&retryCount, 1)
 }

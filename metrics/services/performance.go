@@ -154,7 +154,7 @@ func (m Metric) WithBuckets(buckets []float64) Metric {
 }
 
 // StartPerformanceMonitoring démarre la surveillance des performances internes
-func StartPerformanceMonitoring(ctx context.Context, client *victoria.Client) {
+func StartPerformanceMonitoring(ctx context.Context, client *victoria.MetricsClient) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 

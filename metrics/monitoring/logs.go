@@ -11,13 +11,15 @@ import (
 
 	"metrics/models"
 	metrics "metrics/services"
+	"metrics/types"
 	"metrics/utils"
 	"metrics/victoria"
 )
 
 // LogMonitor surveille les fichiers de log du serveur
 type LogMonitor struct {
-	vmClient       *victoria.Client
+	metricsClient  *victoria.MetricsClient
+	logsClient     victoria.LogsClient
 	logDir         string
 	logPatterns    []string
 	filters        map[string]*regexp.Regexp
@@ -45,10 +47,16 @@ func WithMaxFileSize(size int64) LogMonitorOption {
 	}
 }
 
-func NewLogMonitor(vmClient *victoria.Client, logDir string, opts ...LogMonitorOption) *LogMonitor {
+func NewLogMonitor(
+	metricsClient *victoria.MetricsClient,
+	logsClient victoria.LogsClient,
+	directory string,
+	opts ...LogMonitorOption,
+) *LogMonitor {
 	lm := &LogMonitor{
-		vmClient: vmClient,
-		logDir:   logDir,
+		metricsClient: metricsClient,
+		logsClient:    logsClient,
+		logDir:        directory,
 		logPatterns: []string{
 			"error.log",
 			"server.log",
@@ -261,11 +269,17 @@ func (lm *LogMonitor) processBatch(logs []models.LogEntry) {
 		for _, v := range deduped {
 			values = append(values, v)
 		}
-		lm.vmClient.SendLogs(values)
+		// Convert models.LogEntry to types.Log
+		logs := make([]types.Log, len(values))
+		for i, v := range values {
+			logs[i] = types.Log{
+				Timestamp: v.Timestamp,
+				Level:     v.Level,
+				Message:   v.Message,
+				Labels:    v.Labels,
+				Source:    "acserver",
+			}
+		}
+		lm.logsClient.SendLogs(logs)
 	}
-}
-
-func (lm *LogMonitor) recoverLostLogs() error {
-	// Implémentation de la récupération
-	return nil
 }

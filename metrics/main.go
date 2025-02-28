@@ -100,12 +100,14 @@ func main() {
 		},
 	}
 
-	// Initialiser le client Victoria
-	vmClient := initVictoriaMetrics()
+	// Initialiser les deux clients
+	metricsClient := initVictoriaMetrics()
+	logsClient := initVictoriaLogs()
 
-	// Démarrer le monitoring avec gestion d'erreurs améliorée
+	// Démarrer le monitoring avec les deux clients
 	logMonitor := monitoring.NewLogMonitor(
-		vmClient,
+		metricsClient,
+		logsClient,
 		config.Logging.Directory,
 		monitoring.WithPatterns(config.Logging.Patterns),
 		monitoring.WithMaxFileSize(config.Logging.MaxFileSize),
@@ -115,19 +117,19 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go vmClient.StartMetricBuffer(ctx)
+	go metricsClient.StartMetricBuffer(ctx)
 	go logMonitor.Start(ctx)
 
 	// Start monitoring
-	go monitoring.MonitorHealthMetrics(ctx, vmClient, serverState)
+	go monitoring.MonitorHealthMetrics(ctx, metricsClient, serverState)
 	go monitoring.MonitorSystemResources(ctx, serverState)
 
 	// Démarrer le monitoring des performances internes
-	go metrics.StartPerformanceMonitoring(ctx, vmClient)
+	go metrics.StartPerformanceMonitoring(ctx, metricsClient)
 
 	// Prepare and start the server
 	serverReady := make(chan struct{}, 1)
-	cmd := prepareServerCommand(ctx, input, args, serverState, serverReady, vmClient)
+	cmd := prepareServerCommand(ctx, input, args, serverState, serverReady, metricsClient)
 	if err := cmd.Start(); err != nil {
 		utils.LogError("Error Starting Cmd: %v", err)
 	}
@@ -141,7 +143,7 @@ func main() {
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
 // It sets up output interception and command arguments.
-func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.Client) *exec.Cmd {
+func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.MetricsClient) *exec.Cmd {
 	argsList := strings.Fields(*args)
 	cmd := exec.CommandContext(ctx, *input, argsList...)
 	cmd.Stderr = &interceptor{forward: os.Stderr}
@@ -159,7 +161,7 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 
 // waitForServerEnd waits for the server to signal readiness.
 // It returns an error if the server fails to become ready within the timeout period.
-func waitForServerEnd(ctx context.Context, serverReady chan struct{}, vmClient *victoria.Client, reserveDuration time.Duration) {
+func waitForServerEnd(ctx context.Context, serverReady chan struct{}, vmClient *victoria.MetricsClient, reserveDuration time.Duration) {
 	select {
 	case <-serverReady:
 		utils.LogSDK("Server reported ready")
@@ -276,23 +278,41 @@ func initHealthServer(state *types.ServerState) {
 	}()
 }
 
-func initVictoriaMetrics() *victoria.Client {
+func initVictoriaMetrics() *victoria.MetricsClient {
 	cfg := config.NewDefaultConfig()
 
-	// Configuration Victoria URL et credentials
-	if url := os.Getenv("VICTORIA_URL"); url != "" {
-		if port := os.Getenv("VICTORIA_PORT"); port != "" {
+	// Configuration Victoria Metrics URL et credentials
+	if url := os.Getenv("VICTORIA_METRICS_URL"); url != "" {
+		if port := os.Getenv("VICTORIA_METRICS_PORT"); port != "" {
 			cfg.Victoria.URL = fmt.Sprintf("http://%s:%s", url, port)
 		} else {
 			cfg.Victoria.URL = fmt.Sprintf("http://%s:%s", url, config.DefaultVictoriaPort)
 		}
 	}
 
-	if user := os.Getenv("VICTORIA_USERNAME"); user != "" {
+	// Configuration Victoria Logs URL et credentials
+	if url := os.Getenv("VICTORIA_LOGS_URL"); url != "" {
+		if port := os.Getenv("VICTORIA_LOGS_PORT"); port != "" {
+			cfg.VictoriaLogs.URL = fmt.Sprintf("http://%s:%s", url, port)
+		} else {
+			cfg.VictoriaLogs.URL = fmt.Sprintf("http://%s:%s", url, config.DefaultVictoriaLogsPort)
+		}
+	}
+
+	// Configuration des credentials pour VictoriaMetrics
+	if user := os.Getenv("VICTORIA_METRICS_USERNAME"); user != "" {
 		cfg.Victoria.Username = user
 	}
-	if pass := os.Getenv("VICTORIA_PASSWORD"); pass != "" {
+	if pass := os.Getenv("VICTORIA_METRICS_PASSWORD"); pass != "" {
 		cfg.Victoria.Password = pass
+	}
+
+	// Configuration des credentials pour VictoriaLogs
+	if user := os.Getenv("VICTORIA_LOGS_USERNAME"); user != "" {
+		cfg.VictoriaLogs.Username = user
+	}
+	if pass := os.Getenv("VICTORIA_LOGS_PASSWORD"); pass != "" {
+		cfg.VictoriaLogs.Password = pass
 	}
 
 	if size := os.Getenv("METRICS_BATCH_SIZE"); size != "" {
@@ -319,5 +339,34 @@ func initVictoriaMetrics() *victoria.Client {
 		}
 	}
 
+	if compression := os.Getenv("METRICS_COMPRESSION"); compression != "" {
+		if val, err := strconv.ParseBool(compression); err == nil {
+			cfg.Metrics.Compression = val
+		}
+	}
+
 	return victoria.NewClient(cfg)
+}
+
+func initVictoriaLogs() victoria.LogsClient {
+	cfg := config.NewDefaultConfig()
+
+	// Configuration Victoria Logs URL et credentials
+	if url := os.Getenv("VICTORIA_LOGS_URL"); url != "" {
+		if port := os.Getenv("VICTORIA_LOGS_PORT"); port != "" {
+			cfg.VictoriaLogs.URL = fmt.Sprintf("http://%s:%s", url, port)
+		} else {
+			cfg.VictoriaLogs.URL = fmt.Sprintf("http://%s:%s", url, config.DefaultVictoriaLogsPort)
+		}
+	}
+
+	// Configuration des credentials pour VictoriaLogs
+	if user := os.Getenv("VICTORIA_LOGS_USERNAME"); user != "" {
+		cfg.VictoriaLogs.Username = user
+	}
+	if pass := os.Getenv("VICTORIA_LOGS_PASSWORD"); pass != "" {
+		cfg.VictoriaLogs.Password = pass
+	}
+
+	return victoria.NewLogsClient(&cfg.VictoriaLogs)
 }

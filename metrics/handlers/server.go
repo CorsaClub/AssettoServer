@@ -16,7 +16,7 @@ import (
 
 // HandleServerOutput processes server output and updates metrics.
 // It handles various server events based on the output string.
-func HandleServerOutput(output string, vmClient *victoria.Client, state *types.ServerState, serverReady chan struct{}, cancel context.CancelFunc) {
+func HandleServerOutput(output string, vmClient *victoria.MetricsClient, state *types.ServerState, serverReady chan struct{}, cancel context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -216,7 +216,7 @@ func handleServerReady(state *types.ServerState, labels map[string]string, serve
 }
 
 // handleSessionEnd handles the end of a game session by kicking all players and initiating a graceful shutdown.
-func handleSessionEnd(vmClient *victoria.Client, state *types.ServerState, labels map[string]string, cancel context.CancelFunc) {
+func handleSessionEnd(vmClient *victoria.MetricsClient, state *types.ServerState, labels map[string]string, cancel context.CancelFunc) {
 	state.Lock()
 	if state.ShuttingDown {
 		state.Unlock()
@@ -248,7 +248,7 @@ func handleSessionEnd(vmClient *victoria.Client, state *types.ServerState, label
 }
 
 // handlePlayerConnect processes a player's connection, updates player counts, and increments relevant metrics.
-func handlePlayerConnect(state *types.ServerState, vmClient *victoria.Client, output string, labels map[string]string) {
+func handlePlayerConnect(state *types.ServerState, vmClient *victoria.MetricsClient, output string, labels map[string]string) {
 	// Extract player info using the utility function
 	player := utils.ExtractPlayerInfo(output)
 	if player.SteamID == "" {
@@ -280,7 +280,7 @@ func handlePlayerConnect(state *types.ServerState, vmClient *victoria.Client, ou
 }
 
 // handlePlayerDisconnect processes a player's disconnection and updates relevant metrics.
-func handlePlayerDisconnect(state *types.ServerState, vmClient *victoria.Client, output string, labels map[string]string) {
+func handlePlayerDisconnect(state *types.ServerState, vmClient *victoria.MetricsClient, output string, labels map[string]string) {
 	steamID := utils.ExtractSteamID(output)
 	removePlayer(state, steamID)
 
@@ -357,7 +357,7 @@ func copyLabels(labels map[string]string) map[string]string {
 }
 
 // updatePlayerCount updates the player count metric in VictoriaMetrics
-func updatePlayerCount(state *types.ServerState, vmClient *victoria.Client) {
+func updatePlayerCount(state *types.ServerState, vmClient *victoria.MetricsClient) {
 	vmClient.SendMetrics(types.MetricBatch{
 		Metrics: []types.Metric{
 			{

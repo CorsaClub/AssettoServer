@@ -18,7 +18,7 @@ import (
 // DoHealth performs periodic health checks of the server.
 // It pings the Agones SDK and updates relevant metrics based on the health status.
 // If a health check fails, it initiates a graceful shutdown of the server.
-func DoHealth(ctx context.Context, vmClient *victoria.Client, state *types.ServerState, cancel context.CancelFunc) {
+func DoHealth(ctx context.Context, vmClient *victoria.MetricsClient, state *types.ServerState, cancel context.CancelFunc) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -107,7 +107,7 @@ func isHealthy(state *types.ServerState) bool {
 }
 
 // MonitorHealthMetrics surveille et met à jour les métriques de santé du serveur
-func MonitorHealthMetrics(ctx context.Context, vmClient *victoria.Client, state *types.ServerState) {
+func MonitorHealthMetrics(ctx context.Context, vmClient *victoria.MetricsClient, state *types.ServerState) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 

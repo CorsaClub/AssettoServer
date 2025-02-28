@@ -96,6 +96,7 @@ RUN mkdir -p /app/AssettoServer/ && \
     cp /home/acserver/.steam/sdk64/steamclient.so /app/AssettoServer/ && \
     chmod +x /app/AssettoServer/steamclient.so
 
+# Environment variables
 ENV GAMESERVER_ID=Unknown
 ENV GAMESERVER_REGION=Unknown
 ENV SERVER_NAME=Unknown
