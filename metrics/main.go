@@ -12,10 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"metrics/config"
 	"metrics/handlers"
 	"metrics/monitoring"
 	metrics "metrics/services"
@@ -44,19 +46,6 @@ func main() {
 	// Configuration flags
 	input := flag.String("i", "./start-server.sh", "Path to server start script")
 	args := flag.String("args", "", "Arguments for the server")
-
-	victoriaUrl := os.Getenv("VICTORIA_URL")
-	victoriaPort := os.Getenv("VICTORIA_PORT")
-	victoriaUsername := os.Getenv("VICTORIA_USERNAME")
-	victoriaPassword := os.Getenv("VICTORIA_PASSWORD")
-
-	// Construire l'URL complète
-	var victoriaEndpoint string
-	if victoriaUrl != "" && victoriaPort != "" {
-		victoriaEndpoint = fmt.Sprintf("http://%s:%s", victoriaUrl, victoriaPort)
-	} else {
-		victoriaEndpoint = *flag.String("victoria-endpoint", "http://localhost:8428", "VictoriaMetrics endpoint")
-	}
 
 	flag.Parse()
 
@@ -92,7 +81,7 @@ func main() {
 			BatchPeriod time.Duration `json:"batch_period"`
 			Timeout     time.Duration `json:"timeout"`
 		}{
-			Endpoint:    victoriaEndpoint,
+			Endpoint:    *flag.String("victoria-endpoint", "http://localhost:8428", "VictoriaMetrics endpoint"),
 			MaxRetries:  3,
 			BatchSize:   100,
 			BatchPeriod: 5 * time.Second,
@@ -111,20 +100,8 @@ func main() {
 		},
 	}
 
-	// Configuration du client Victoria avec timeouts et compression
-	clientConfig := victoria.ClientConfig{
-		RequestTimeout:  10 * time.Second,
-		ConnectTimeout:  5 * time.Second,
-		MaxRetryBackoff: 30 * time.Second,
-		Compression:     true,
-	}
-
-	vmClient := victoria.NewClient(
-		config.VictoriaMetrics.Endpoint,
-		victoriaUsername,
-		victoriaPassword,
-		clientConfig,
-	)
+	// Initialiser le client Victoria
+	vmClient := initVictoriaMetrics()
 
 	// Démarrer le monitoring avec gestion d'erreurs améliorée
 	logMonitor := monitoring.NewLogMonitor(
@@ -297,4 +274,50 @@ func initHealthServer(state *types.ServerState) {
 			utils.LogError("HTTP health server error: %v", err)
 		}
 	}()
+}
+
+func initVictoriaMetrics() *victoria.Client {
+	cfg := config.NewDefaultConfig()
+
+	// Configuration Victoria URL et credentials
+	if url := os.Getenv("VICTORIA_URL"); url != "" {
+		if port := os.Getenv("VICTORIA_PORT"); port != "" {
+			cfg.Victoria.URL = fmt.Sprintf("http://%s:%s", url, port)
+		} else {
+			cfg.Victoria.URL = fmt.Sprintf("http://%s:%s", url, config.DefaultVictoriaPort)
+		}
+	}
+
+	if user := os.Getenv("VICTORIA_USERNAME"); user != "" {
+		cfg.Victoria.Username = user
+	}
+	if pass := os.Getenv("VICTORIA_PASSWORD"); pass != "" {
+		cfg.Victoria.Password = pass
+	}
+
+	if size := os.Getenv("METRICS_BATCH_SIZE"); size != "" {
+		if val, err := strconv.Atoi(size); err == nil {
+			cfg.Metrics.BatchSize = val
+		}
+	}
+
+	if interval := os.Getenv("METRICS_FLUSH_INTERVAL"); interval != "" {
+		if duration, err := time.ParseDuration(interval); err == nil {
+			cfg.Metrics.FlushInterval = duration
+		}
+	}
+
+	if size := os.Getenv("METRICS_BUFFER_SIZE"); size != "" {
+		if val, err := strconv.Atoi(size); err == nil {
+			cfg.Metrics.BufferSize = val
+		}
+	}
+
+	if retention := os.Getenv("METRICS_RETENTION_TIME"); retention != "" {
+		if duration, err := time.ParseDuration(retention); err == nil {
+			cfg.Metrics.RetentionTime = duration
+		}
+	}
+
+	return victoria.NewClient(cfg)
 }

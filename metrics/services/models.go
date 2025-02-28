@@ -2,6 +2,7 @@
 package metrics
 
 import (
+	"errors"
 	"time"
 )
 
@@ -349,6 +350,108 @@ var (
 		Gauge,
 		ServerLabels,
 	)
+
+	// New metrics
+	CollisionCounter = NewMetric(
+		"assetto_collision_total",
+		"Total number of collisions",
+		Counter,
+		append(ServerLabels, "collision_type", "player_id", "player_name"),
+	)
+
+	LapTimeHistogram = NewMetric(
+		"assetto_lap_time_seconds",
+		"Lap time distribution",
+		Histogram,
+		append(ServerLabels, "player_id", "player_name", "car_model", "track"),
+	).WithBuckets([]float64{60, 90, 120, 150, 180, 210, 240})
+
+	IncidentCounter = NewMetric(
+		"assetto_race_incident_total",
+		"Total number of race incidents",
+		Counter,
+		append(ServerLabels, "incident_type", "player_id", "player_name"),
+	)
+
+	// Métriques de connexion
+	ConnectionAttemptsCounter = NewMetric(
+		"assetto_server_connection_attempts_total",
+		"Total number of connection attempts",
+		Counter,
+		append(ServerLabels, "status"),
+	)
+
+	// Métriques CSP
+	CSPFeaturesGauge = NewMetric(
+		"assetto_server_csp_features_enabled",
+		"CSP features enabled per player",
+		Gauge,
+		append(ServerLabels, "player_name", "feature"),
+	)
+
+	// Métriques de session
+	SessionStateChangesCounter = NewMetric(
+		"assetto_server_session_state_changes_total",
+		"Total number of session state changes",
+		Counter,
+		append(ServerLabels, "from_state", "to_state"),
+	)
+
+	// Métriques de chat
+	ChatMessagesByTypeCounter = NewMetric(
+		"assetto_server_chat_messages_by_type_total",
+		"Total number of chat messages by type",
+		Counter,
+		append(ServerLabels, "player_name", "message_type", "content"),
+	)
+
+	// Métriques de clean exit
+	CleanExitsCounter = NewMetric(
+		"assetto_server_clean_exits_total",
+		"Total number of clean player exits",
+		Counter,
+		append(ServerLabels, "player_name", "steam_id"),
+	)
+
+	// Connection metrics détaillées
+	ConnectionStatusCounter = NewMetric(
+		"assetto_server_connection_status_total",
+		"Connection attempts and results",
+		Counter,
+		append(ServerLabels, "player_name", "steam_id", "status"),
+	)
+
+	// Lobby registration confirmation
+	LobbyRegistrationStatusCounter = NewMetric(
+		"assetto_server_lobby_registration_status_total",
+		"Lobby registration confirmation status",
+		Counter,
+		append(ServerLabels, "status", "details"),
+	)
+
+	// Session time remaining
+	SessionRemainingTimeGauge = NewMetric(
+		"assetto_server_session_remaining_seconds",
+		"Remaining time in current session",
+		Gauge,
+		append(ServerLabels, "session_type"),
+	)
+
+	// Session switch events
+	SessionSwitchCounter = NewMetric(
+		"assetto_server_session_switch_total",
+		"Session type changes",
+		Counter,
+		append(ServerLabels, "from_type", "to_type", "track", "config"),
+	)
+
+	// Server invites
+	ServerInviteCounter = NewMetric(
+		"assetto_server_invite_total",
+		"Server invitation URLs generated",
+		Counter,
+		append(ServerLabels, "url_hash"),
+	)
 )
 
 // NewMetric creates a new metric with the given parameters
@@ -379,4 +482,14 @@ func (m *Metric) SetLabels(labels map[string]string) {
 	for k, v := range labels {
 		m.LabelValues[k] = v
 	}
+}
+
+func (m *Metric) Validate() error {
+	if m.Name == "" {
+		return errors.New("metric name cannot be empty")
+	}
+	if m.Type == Histogram && len(m.Buckets) == 0 {
+		return errors.New("histogram must have buckets")
+	}
+	return nil
 }

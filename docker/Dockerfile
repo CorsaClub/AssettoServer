@@ -96,16 +96,29 @@ RUN mkdir -p /app/AssettoServer/ && \
     cp /home/acserver/.steam/sdk64/steamclient.so /app/AssettoServer/ && \
     chmod +x /app/AssettoServer/steamclient.so
 
-# Supprimer les ARG et garder uniquement les ENV avec valeurs par défaut
 ENV GAMESERVER_ID=Unknown
 ENV GAMESERVER_REGION=Unknown
 ENV SERVER_NAME=Unknown
 ENV SERVER_TYPE=Private
 
+# Victoria Metrics configuration
 ENV VICTORIA_URL=localhost
 ENV VICTORIA_PORT=8428
 ENV VICTORIA_USERNAME=username
 ENV VICTORIA_PASSWORD=password
+
+# Metrics configuration
+ENV METRICS_BATCH_SIZE=1000
+ENV METRICS_FLUSH_INTERVAL=15s
+ENV METRICS_BUFFER_SIZE=10000
+ENV METRICS_RETENTION_TIME=24h
+
+# Victoria connection configuration
+ENV VICTORIA_REQUEST_TIMEOUT=10s
+ENV VICTORIA_CONNECT_TIMEOUT=5s
+ENV VICTORIA_MAX_RETRIES=3
+ENV VICTORIA_RETRY_BACKOFF=1s
+ENV VICTORIA_COMPRESSION=true
 
 # Switch to non-root user
 USER acserver

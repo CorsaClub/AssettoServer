@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"metrics/models"
@@ -16,14 +17,17 @@ import (
 
 // LogMonitor surveille les fichiers de log du serveur
 type LogMonitor struct {
-	vmClient    *victoria.Client
-	logDir      string
-	logPatterns []string
-	filters     map[string]*regexp.Regexp
-	seenLogs    map[string]time.Time // Clé: message du log, Valeur: timestamp
-	batchSize   int
-	batchTimer  time.Duration
-	breaker     *utils.CircuitBreaker
+	vmClient       *victoria.Client
+	logDir         string
+	logPatterns    []string
+	filters        map[string]*regexp.Regexp
+	seenLogs       map[string]time.Time // Clé: message du log, Valeur: timestamp
+	batchSize      int
+	batchTimer     time.Duration
+	breaker        *utils.CircuitBreaker
+	chatEnabled    bool
+	incidentTypes  map[string]*regexp.Regexp
+	configPatterns map[string]*regexp.Regexp
 }
 
 // Add these option functions
@@ -53,11 +57,14 @@ func NewLogMonitor(vmClient *victoria.Client, logDir string, opts ...LogMonitorO
 			"admin.log",
 			"connection.log",
 		},
-		filters:    initLogFilters(),
-		seenLogs:   make(map[string]time.Time),
-		batchSize:  100,
-		batchTimer: 5 * time.Second,
-		breaker:    utils.NewCircuitBreaker(3, 30*time.Second), // 3 max failures, 30s timeout
+		filters:        initLogFilters(),
+		seenLogs:       make(map[string]time.Time),
+		batchSize:      100,
+		batchTimer:     5 * time.Second,
+		breaker:        utils.NewCircuitBreaker(3, 30*time.Second), // 3 max failures, 30s timeout
+		chatEnabled:    false,
+		incidentTypes:  make(map[string]*regexp.Regexp),
+		configPatterns: make(map[string]*regexp.Regexp),
 	}
 
 	for _, opt := range opts {
@@ -68,15 +75,21 @@ func NewLogMonitor(vmClient *victoria.Client, logDir string, opts ...LogMonitorO
 }
 
 func initLogFilters() map[string]*regexp.Regexp {
-	return map[string]*regexp.Regexp{
-		"error":    regexp.MustCompile(`(?i)(error|exception|failed|crash)`),
-		"warning":  regexp.MustCompile(`(?i)(warning|warn|attention)`),
-		"critical": regexp.MustCompile(`(?i)(critical|fatal|emergency|panic)`),
-		"session":  regexp.MustCompile(`(?i)(session.*started|session.*ended|practice|qualifying|race)`),
-		"player":   regexp.MustCompile(`(?i)(connected|disconnected|kicked|banned|collision)`),
-		"network":  regexp.MustCompile(`(?i)(timeout|connection.*refused|network.*error|latency)`),
-		"system":   regexp.MustCompile(`(?i)(cpu|memory|disk|bandwidth|resource)`),
+	filters := map[string]*regexp.Regexp{
+		"error":      regexp.MustCompile(`(?i)(error|exception|failed|crash)`),
+		"warning":    regexp.MustCompile(`(?i)(warning|warn|attention)`),
+		"critical":   regexp.MustCompile(`(?i)(critical|fatal|emergency|panic)`),
+		"session":    regexp.MustCompile(`(?i)(session.*started|session.*ended|practice|qualifying|race|Starting session|Session ended|Session type changed)`),
+		"player":     regexp.MustCompile(`(?i)(connected|disconnected|kicked|banned|collision)`),
+		"network":    regexp.MustCompile(`(?i)(timeout|connection.*refused|network.*error|latency)`),
+		"system":     regexp.MustCompile(`(?i)(cpu|memory|disk|bandwidth|resource)`),
+		"connection": regexp.MustCompile(`(?i)(attempting to connect|supports extra CSP features)`),
+		"chat":       regexp.MustCompile(`CHAT:`),
+		"exit":       regexp.MustCompile(`(?i)(Clean exit received|disconnected)`),
+		"csp":        regexp.MustCompile(`(?i)(CSP handshake|CSP features enabled)`),
 	}
+
+	return filters
 }
 
 func (lm *LogMonitor) Start(ctx context.Context) {
@@ -175,6 +188,45 @@ func (lm *LogMonitor) analyzeLine(line string) (logLevel, eventType string) {
 	// Vérifier les événements système
 	if lm.filters["system"].MatchString(line) {
 		return metrics.LogLevelInfo, "system_event"
+	}
+
+	// Ajouter l'analyse des nouveaux types de logs
+	if lm.chatEnabled && strings.Contains(line, "CHAT:") {
+		return metrics.LogLevelInfo, "chat_message"
+	}
+
+	// Analyse des connexions
+	if lm.filters["connection"].MatchString(line) {
+		if strings.Contains(line, "attempting to connect") {
+			return metrics.LogLevelInfo, "connection_attempt"
+		}
+		if strings.Contains(line, "supports extra CSP features") {
+			return metrics.LogLevelInfo, "csp_features"
+		}
+	}
+
+	// Analyse des sessions
+	if lm.filters["session"].MatchString(line) {
+		return metrics.LogLevelInfo, "session_change"
+	}
+
+	// Analyse des déconnexions propres
+	if lm.filters["exit"].MatchString(line) {
+		return metrics.LogLevelInfo, "clean_exit"
+	}
+
+	// Détecter les incidents
+	for incidentType, pattern := range lm.incidentTypes {
+		if pattern.MatchString(line) {
+			return metrics.LogLevelWarning, "race_incident_" + incidentType
+		}
+	}
+
+	// Détecter les changements de configuration
+	for configType, pattern := range lm.configPatterns {
+		if pattern.MatchString(line) {
+			return metrics.LogLevelInfo, "config_change_" + configType
+		}
 	}
 
 	return "", ""

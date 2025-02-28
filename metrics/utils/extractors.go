@@ -2,6 +2,8 @@
 package utils
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -156,4 +158,39 @@ func ExtractAISlots(output string) map[string]int {
 	}
 
 	return slots
+}
+
+// ExtractChatMessage extracts the chat message from server output.
+func ExtractChatMessage(output string) string {
+	// Extraire le message après "CHAT:"
+	if idx := strings.Index(output, "CHAT:"); idx != -1 {
+		return strings.TrimSpace(output[idx+5:])
+	}
+	return ""
+}
+
+// ExtractSessionTime extracts the session time from server output.
+func ExtractSessionTime(output string) int {
+	// Extraire le temps restant en secondes
+	return 0 // TODO: Implémenter l'extraction
+}
+
+// ExtractLobbyDetails extracts the lobby details from server output.
+func ExtractLobbyDetails(output string) string {
+	// Extraire les détails du lobby
+	return "" // TODO: Implémenter l'extraction
+}
+
+// ExtractInviteURL extracts the invite URL from server output.
+func ExtractInviteURL(output string) string {
+	// Extraire l'URL d'invitation
+	return "" // TODO: Implémenter l'extraction
+}
+
+// HashString creates a hash of a string.
+func HashString(s string) string {
+	// Créer un hash de la chaîne
+	h := sha256.New()
+	h.Write([]byte(s))
+	return fmt.Sprintf("%x", h.Sum(nil))[:8]
 }

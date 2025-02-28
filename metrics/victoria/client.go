@@ -12,6 +12,7 @@ import (
 	"compress/gzip"
 	"io"
 
+	"metrics/config"
 	"metrics/models"
 	"metrics/types"
 )
@@ -22,7 +23,7 @@ type Client struct {
 	Username  string
 	Password  string
 	client    *http.Client
-	config    ClientConfig
+	config    *config.VictoriaConfig
 	buffer    chan types.MetricBatch
 	batchSize int
 }
@@ -35,21 +36,11 @@ type MetricPoint struct {
 	Labels    map[string]string `json:"labels,omitempty"`
 }
 
-// Client configuration with timeouts
-type ClientConfig struct {
-	RequestTimeout  time.Duration
-	ConnectTimeout  time.Duration
-	MaxRetryBackoff time.Duration
-	Compression     bool
-	MaxRetries      int
-	RetryBackoff    time.Duration
-}
-
 // NewClient creates a new VictoriaMetrics client
-func NewClient(url, username, password string, config ClientConfig) *Client {
+func NewClient(cfg *config.Config) *Client {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout:   config.ConnectTimeout,
+			Timeout:   cfg.Victoria.ConnectTimeout,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		MaxIdleConns:        100,
@@ -58,23 +49,29 @@ func NewClient(url, username, password string, config ClientConfig) *Client {
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
 
-	return &Client{
-		URL:      url,
-		Username: username,
-		Password: password,
-		config:   config,
+	client := &Client{
+		URL:      cfg.Victoria.URL,
+		Username: cfg.Victoria.Username,
+		Password: cfg.Victoria.Password,
+		config:   &cfg.Victoria,
 		client: &http.Client{
 			Transport: transport,
-			Timeout:   config.RequestTimeout,
+			Timeout:   cfg.Victoria.RequestTimeout,
 		},
-		buffer:    make(chan types.MetricBatch, 100),
-		batchSize: 100,
+		buffer:    make(chan types.MetricBatch, cfg.Metrics.BufferSize),
+		batchSize: cfg.Metrics.BatchSize,
 	}
+	return client
 }
 
 // SendMetrics sends a batch of metrics to VictoriaMetrics
 func (c *Client) SendMetrics(batch types.MetricBatch) error {
-	// Conversion si nécessaire
+	for _, metric := range batch.Metrics {
+		if err := validateMetric(&metric); err != nil {
+			return fmt.Errorf("invalid metric %s: %w", metric.Name, err)
+		}
+	}
+
 	return c.sendToVictoriaMetrics(batch)
 }
 
@@ -247,12 +244,30 @@ func (c *Client) flushMetrics(batch types.MetricBatch) error {
 	return fmt.Errorf("failed after %d retries", c.config.MaxRetries)
 }
 
-// Ajouter une validation plus stricte des métriques
-func validateMetric(metric types.Metric) error {
+// Ajouter la validation des métriques
+func validateMetric(metric *types.Metric) error {
 	if metric.Name == "" {
 		return fmt.Errorf("metric name cannot be empty")
 	}
-	// Plus de validations...
+
+	if metric.Timestamp.IsZero() {
+		return fmt.Errorf("metric timestamp cannot be zero")
+	}
+
+	if metric.Type == types.Histogram && len(metric.Buckets) == 0 {
+		return fmt.Errorf("histogram metric must have buckets")
+	}
+
+	// Valider les labels
+	for k, v := range metric.LabelValues {
+		if k == "" {
+			return fmt.Errorf("label key cannot be empty")
+		}
+		if v == "" {
+			return fmt.Errorf("label value cannot be empty for key %s", k)
+		}
+	}
+
 	return nil
 }
 
@@ -273,4 +288,9 @@ type MetricError struct {
 func (c *Client) shouldRetry(err error) bool {
 	// Logique de décision pour les retries
 	return false
+}
+
+// Add this method to Client
+func (c *Client) Buffer() chan types.MetricBatch {
+	return c.buffer
 }

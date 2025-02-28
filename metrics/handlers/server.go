@@ -497,19 +497,35 @@ func extractChecksumAsset(output string) string {
 }
 
 // handleServerInvite handles server invite-related events
-func handleServerInvite(output string, _ *types.ServerState, _ map[string]string) {
-	//url := strings.Split(output, "Server invite link:")[1]
-	//utils.LogSDK("Server invite URL available: %s", strings.TrimSpace(url))
+func handleServerInvite(output string, state *types.ServerState, labels map[string]string) {
+	inviteURL := utils.ExtractInviteURL(output)
+	urlHash := utils.HashString(inviteURL) // Pour éviter de stocker l'URL complète
+
+	metrics.ServerInviteCounter.With(map[string]string{
+		"server_id": labels["server_id"],
+		"url_hash":  urlHash,
+	}).Inc()
 }
 
 // handleSessionSwitch handles session switch-related events and updates metrics accordingly.
-func handleSessionSwitch(output string, state *types.ServerState, _ map[string]string) {
-	sessionID := extractSessionID(output)
-	//utils.LogSDK("Switching to session ID: %s", sessionID)
+func handleSessionSwitch(output string, state *types.ServerState, labels map[string]string) {
+	fromType := state.SessionType // ancien type
+	toType := utils.ExtractSessionType(output)
+	track := state.CurrentTrack
+	config := state.CurrentLayout
+
+	// Incrémenter le compteur de changements
+	metrics.SessionSwitchCounter.With(map[string]string{
+		"server_id": labels["server_id"],
+		"from_type": fromType,
+		"to_type":   toType,
+		"track":     track,
+		"config":    config,
+	}).Inc()
+
+	// Mettre à jour le type de session dans l'état
 	state.Lock()
-	if state.CurrentSession != nil {
-		state.CurrentSession.ID = sessionID
-	}
+	state.SessionType = toType
 	state.Unlock()
 }
 
@@ -534,19 +550,30 @@ func handleUDPServer(output string, _ *types.ServerState, _ map[string]string) {
 }
 
 // handleSessionTime handles session time-related events and updates metrics accordingly.
-func handleSessionTime(output string, state *types.ServerState, _ map[string]string) {
-	duration := strings.Split(output, "session :")[1]
-	//utils.LogSDK("Remaining time of session :%s", duration)
-	state.Lock()
-	if state.CurrentSession != nil {
-		state.CurrentSession.RemainingTime = strings.TrimSpace(duration)
-	}
-	state.Unlock()
+func handleSessionTime(output string, state *types.ServerState, labels map[string]string) {
+	remainingTime := utils.ExtractSessionTime(output)
+	sessionType := state.SessionType
+
+	// Mettre à jour la gauge de temps restant
+	metrics.SessionRemainingTimeGauge.With(map[string]string{
+		"server_id":    labels["server_id"],
+		"session_type": sessionType,
+	}).Set(float64(remainingTime))
 }
 
 // handleLobbyRegistration handles lobby registration-related events
-func handleLobbyRegistration(_ string, _ *types.ServerState, _ map[string]string) {
-	utils.LogSDK("LOBBY REGISTRATION : OK - Approved by SDK")
+func handleLobbyRegistration(output string, state *types.ServerState, labels map[string]string) {
+	status := "success"
+	details := utils.ExtractLobbyDetails(output)
+
+	metrics.LobbyRegistrationCounter.With(labels).Inc()
+
+	// Enregistrer le statut détaillé
+	metrics.LobbyRegistrationStatusCounter.With(map[string]string{
+		"server_id": labels["server_id"],
+		"status":    status,
+		"details":   details,
+	}).Inc()
 }
 
 // handleUpdateLoop handles update loop-related events
@@ -632,8 +659,22 @@ func handleSteamConnection(output string, _ *types.ServerState, _ map[string]str
 	// Don't log anything
 }
 
-func handleAttemptingToConnect(output string, _ *types.ServerState, _ map[string]string) {
-	// Don't log anything
+func handleAttemptingToConnect(output string, state *types.ServerState, labels map[string]string) {
+	playerInfo := utils.ExtractPlayerInfo(output)
+
+	// Incrémenter le compteur de tentatives
+	metrics.ConnectionAttemptsCounter.With(map[string]string{
+		"server_id": labels["server_id"],
+		"status":    "attempt",
+	}).Inc()
+
+	// Enregistrer le statut détaillé
+	metrics.ConnectionStatusCounter.With(map[string]string{
+		"server_id":   labels["server_id"],
+		"player_name": playerInfo.Name,
+		"steam_id":    playerInfo.SteamID,
+		"status":      "attempting",
+	}).Inc()
 }
 
 func handleExtraCSPFeatures(output string, _ *types.ServerState, _ map[string]string) {
@@ -657,12 +698,36 @@ func handleCSPHandshake(output string, state *types.ServerState, labels map[stri
 	}
 }
 
-func handleChatMessage(_ string, _ *types.ServerState, labels map[string]string) {
-	// Optional: track chat messages if necessary
+func handleChatMessage(output string, state *types.ServerState, labels map[string]string) {
+	// Extraire le nom du joueur et le contenu du message
+	playerName := utils.ExtractName(output)
+	messageContent := utils.ExtractChatMessage(output)
+	messageType := determineChatType(messageContent) // admin, global, team, etc.
+
+	// Incrémenter le compteur général
 	metrics.ChatMessagesCounter.With(labels).Inc()
+
+	// Incrémenter le compteur détaillé
+	metrics.ChatMessagesByTypeCounter.With(map[string]string{
+		"server_id":    labels["server_id"],
+		"player_name":  playerName,
+		"message_type": messageType,
+		"content":      messageContent,
+	}).Inc()
 }
 
 func handleCleanExit(output string, _ *types.ServerState, _ map[string]string) {
 	steamID := utils.ExtractSteamID(output)
 	utils.LogDebug("Clean exit received for player with Steam ID: %s", steamID)
+}
+
+// Fonction utilitaire pour déterminer le type de message chat
+func determineChatType(message string) string {
+	if strings.HasPrefix(message, "/admin") {
+		return "admin"
+	}
+	if strings.HasPrefix(message, "/t ") {
+		return "team"
+	}
+	return "global"
 }
