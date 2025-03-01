@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"time"
 )
 
@@ -43,6 +44,12 @@ type Config struct {
 	Victoria     VictoriaConfig     `json:"victoria"`
 	VictoriaLogs VictoriaLogsConfig `json:"victoria_logs"`
 	Metrics      MetricsConfig      `json:"metrics"`
+}
+
+// AuthConfig is for websocket authentication
+type AuthConfig struct {
+	SteamID string
+	UserID  string
 }
 
 // Valeurs par défaut pour la configuration
@@ -103,4 +110,17 @@ func NewDefaultConfig() *Config {
 			MaxMetricNameLength: DefaultMaxMetricNameLength,
 		},
 	}
+}
+
+// NewAuthConfig is for websocket authentication
+func NewAuthConfig() *AuthConfig {
+	return &AuthConfig{
+		SteamID: os.Getenv("AUTH_STEAM_ID"),
+		UserID:  os.Getenv("AUTH_USER_ID"),
+	}
+}
+
+// IsValid is for websocket authentication
+func (c *AuthConfig) IsValid() bool {
+	return c.SteamID != "" && c.UserID != ""
 }

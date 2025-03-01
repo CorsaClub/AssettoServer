@@ -102,6 +102,10 @@ ENV GAMESERVER_REGION=Unknown
 ENV SERVER_NAME=Unknown
 ENV SERVER_TYPE=Private
 
+# Authentication configuration
+ENV AUTH_STEAM_ID=""
+ENV AUTH_USER_ID=""
+
 # Victoria Metrics configuration
 ENV VICTORIA_METRICS_URL=localhost
 ENV VICTORIA_METRICS_PORT=8428

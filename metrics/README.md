@@ -58,6 +58,10 @@ Run the wrapper by providing the path to your Assetto Corsa server start script:
 
 The wrapper can be configured using environment variables:
 
+### Authentication Configuration
+- `AUTH_STEAM_ID`: Steam ID for WebSocket authentication
+- `AUTH_USER_ID`: User ID for WebSocket authentication
+
 ### Server Configuration
 - `GAMESERVER_ID`: Unique identifier for the server
 - `GAMESERVER_REGION`: Server region

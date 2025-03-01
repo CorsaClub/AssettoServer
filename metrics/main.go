@@ -24,6 +24,7 @@ import (
 	"metrics/types"
 	"metrics/utils"
 	"metrics/victoria"
+	"metrics/websocket"
 )
 
 // interceptor implémente un io.Writer qui intercepte et transmet les données écrites
@@ -73,7 +74,7 @@ func main() {
 	}
 
 	// Charger la configuration
-	config := &types.Config{
+	serverConfig := &types.Config{
 		VictoriaMetrics: struct {
 			Endpoint    string        `json:"endpoint"`
 			MaxRetries  int           `json:"max_retries"`
@@ -108,9 +109,9 @@ func main() {
 	logMonitor := monitoring.NewLogMonitor(
 		metricsClient,
 		logsClient,
-		config.Logging.Directory,
-		monitoring.WithPatterns(config.Logging.Patterns),
-		monitoring.WithMaxFileSize(config.Logging.MaxFileSize),
+		serverConfig.Logging.Directory,
+		monitoring.WithPatterns(serverConfig.Logging.Patterns),
+		monitoring.WithMaxFileSize(serverConfig.Logging.MaxFileSize),
 	)
 
 	// Démarrer les goroutines avec gestion appropriée
@@ -127,9 +128,19 @@ func main() {
 	// Démarrer le monitoring des performances internes
 	go metrics.StartPerformanceMonitoring(ctx, metricsClient)
 
+	// Initialiser la configuration d'authentification
+	authConfig := config.NewAuthConfig()
+	if !authConfig.IsValid() {
+		utils.LogWarning("WebSocket authentication not configured (AUTH_STEAM_ID and AUTH_USER_ID required)")
+	}
+
+	// Initialiser le serveur WebSocket avec l'authentification
+	wsServer := websocket.NewWebSocketServer(authConfig)
+	go wsServer.Start(ctx)
+
 	// Prepare and start the server
 	serverReady := make(chan struct{}, 1)
-	cmd := prepareServerCommand(ctx, input, args, serverState, serverReady, metricsClient)
+	cmd := prepareServerCommand(ctx, input, args, serverState, serverReady, metricsClient, wsServer)
 	if err := cmd.Start(); err != nil {
 		utils.LogError("Error Starting Cmd: %v", err)
 	}
@@ -138,12 +149,12 @@ func main() {
 	setupSignalHandler(cancel, serverState)
 
 	// Initialize HTTP server for health checks
-	initHealthServer(serverState)
+	initHealthServer(serverState, wsServer)
 }
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
 // It sets up output interception and command arguments.
-func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.MetricsClient) *exec.Cmd {
+func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer) *exec.Cmd {
 	argsList := strings.Fields(*args)
 	cmd := exec.CommandContext(ctx, *input, argsList...)
 	cmd.Stderr = &interceptor{forward: os.Stderr}
@@ -152,6 +163,20 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 		forward: os.Stdout,
 		intercept: func(p []byte) {
 			str := strings.TrimSpace(string(p))
+
+			// Créer une entrée de log
+			logEntry := types.LogEntry{
+				Timestamp: time.Now(),
+				Level:     "INFO",
+				Message:   str,
+				ServerID:  state.ServerID,
+				SessionID: state.CurrentSession.ID,
+			}
+
+			// Envoyer au WebSocket
+			wsServer.BroadcastLog(logEntry)
+
+			// Traiter normalement le log
 			handlers.HandleServerOutput(str, vmClient, state, serverReady, nil)
 		},
 	}
@@ -232,7 +257,7 @@ func logEvent(eventType string, message string, state *types.ServerState) {
 }
 
 // initHealthServer initializes and exposes health check endpoints
-func initHealthServer(state *types.ServerState) {
+func initHealthServer(state *types.ServerState, wsServer *websocket.WebSocketServer) {
 	// Create a separate mux for health checks
 	healthMux := http.NewServeMux()
 
@@ -262,6 +287,9 @@ func initHealthServer(state *types.ServerState) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
+
+	// Add WebSocket handler
+	healthMux.HandleFunc("/ws", wsServer.HandleWebSocket)
 
 	// Start HTTP server for health checks on a separate port
 	go func() {
