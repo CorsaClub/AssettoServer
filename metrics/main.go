@@ -304,8 +304,14 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 			} else {
 				utils.LogInfo("Files in %s:", dir)
 				for _, file := range files {
-					utils.LogInfo("  %s (dir: %v, size: %d)",
-						file.Name(), file.IsDir(), file.Size())
+					fileInfo, err := file.Info()
+					if err != nil {
+						utils.LogInfo("  %s (dir: %v, size: unknown - %v)",
+							file.Name(), file.IsDir(), err)
+					} else {
+						utils.LogInfo("  %s (dir: %v, size: %d)",
+							file.Name(), file.IsDir(), fileInfo.Size())
+					}
 				}
 			}
 		}
@@ -435,7 +441,7 @@ func waitForServerEnd(ctx context.Context, serverReady chan struct{}, vmClient *
 	})
 }
 
-// setupSignalHandler configures signal handling for graceful shutdown.
+// Enhanced signal handler with more detailed logging
 func setupSignalHandler(cancel context.CancelFunc, state *types.ServerState) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
