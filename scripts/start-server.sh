@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Disable verbose mode temporarily to make logs cleaner
+# Disable verbose mode for cleaner logs
 set +x
 
 echo "==============================================="
@@ -10,67 +10,79 @@ echo "Current directory: $(pwd)"
 echo "User: $(whoami)"
 echo "Date: $(date)"
 
-# Re-enable verbose mode
-set -x
-
-# Wait for initialization to complete
+# Wait for initialization to complete with better logging
+echo "Checking for initialization flag at /shared-config/init_done"
 while [ ! -f /shared-config/init_done ]; do
-    echo "Waiting for initialization to complete..."
-    sleep 2
+    echo "Waiting for initialization to complete... (init_done flag not found)"
+    sleep 5
 done
 
-echo "Initialization complete, proceeding with server startup"
+echo "Initialization complete! Found init_done flag."
+echo "Proceeding with server startup sequence..."
 
-# Check for steamclient.so
+# Check for steamclient.so with better error handling
+echo "Checking Steam client library..."
 if [ ! -f /home/acserver/.steam/sdk64/steamclient.so ]; then
-    echo "Setting up Steam client library..."
+    echo "Steam client library not found in primary location."
     mkdir -p /home/acserver/.steam/sdk64
     if [ -f /app/AssettoServer/steamclient.so ]; then
+        echo "Found Steam client library in fallback location, copying..."
         cp /app/AssettoServer/steamclient.so /home/acserver/.steam/sdk64/
         chmod 755 /home/acserver/.steam/sdk64/steamclient.so
+        echo "Steam client library installed successfully."
     else
-        echo "ERROR: steamclient.so not found!"
+        echo "ERROR: Steam client library not found in any location!"
+        ls -la /app/AssettoServer/
+        ls -la /home/acserver/.steam/
         exit 1
     fi
+else
+    echo "Steam client library found in primary location."
 fi
 
-# Change to server directory
+# Change to server directory with better error handling
 echo "Changing to server directory..."
 if [ ! -d /app/AssettoServer ]; then
-    echo "ERROR: Server directory not found!"
+    echo "ERROR: Server directory not found at /app/AssettoServer!"
+    echo "Contents of /app:"
     ls -la /app
     exit 1
 fi
 
-cd /app/AssettoServer || exit 1
-echo "Current directory: $(pwd)"
+cd /app/AssettoServer || { echo "Failed to change directory!"; exit 1; }
+echo "Successfully changed to server directory: $(pwd)"
 
-# Copy configuration
-echo "Copying configuration files..."
-cp -rf /shared-config/* . || echo "Warning: Some files could not be copied"
+# Copy configuration with better feedback
+echo "Copying configuration files from /shared-config..."
+cp -rf /shared-config/* . || { echo "WARNING: Error copying configuration files!"; ls -la /shared-config; }
+echo "Configuration files copied."
 
-# Set permissions
+# Set permissions with better feedback
 echo "Setting file permissions..."
-find . -type f -not -path "*/\.*" -exec chmod 644 {} \;
-find . -type d -not -path "*/\.*" -exec chmod 755 {} \;
-chmod +x ./AssettoServer
+find . -type f -not -path "*/\.*" -exec chmod 644 {} \; || echo "WARNING: Error setting file permissions!"
+find . -type d -not -path "*/\.*" -exec chmod 755 {} \; || echo "WARNING: Error setting directory permissions!"
+chmod +x ./AssettoServer || { echo "ERROR: Failed to make server executable!"; exit 1; }
+echo "File permissions set."
 
-# Verify server executable
+# Verify server executable with better error handling
 if [ ! -f ./AssettoServer ]; then
-    echo "ERROR: AssettoServer executable not found!"
+    echo "ERROR: AssettoServer executable not found after configuration!"
+    echo "Contents of current directory:"
     ls -la
     exit 1
 fi
 
-echo "Server executable found: $(ls -la ./AssettoServer)"
+echo "Server executable verified: $(ls -la ./AssettoServer)"
 
-# Check for critical configuration files
+# Check for critical configuration files with better error handling
 if [ ! -f ./cfg/server_cfg.ini ]; then
     echo "ERROR: server_cfg.ini not found!"
-    ls -la ./cfg/
+    echo "Contents of cfg directory:"
+    ls -la ./cfg/ || echo "cfg directory not found!"
     exit 1
 fi
 
+echo "Configuration files verified."
 echo "==============================================="
 echo "Starting Assetto Corsa Server"
 echo "==============================================="
