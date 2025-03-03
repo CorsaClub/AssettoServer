@@ -54,4 +54,4 @@ cat ./cfg/entry_list.ini
 
 # Start Assetto Corsa Server
 echo "Starting Assetto Corsa Server..."
-./AssettoServer --plugins-from-workdir
+exec ./AssettoServer --plugins-from-workdir

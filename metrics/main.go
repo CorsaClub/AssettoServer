@@ -143,7 +143,20 @@ func main() {
 	cmd := prepareServerCommand(ctx, input, args, serverState, serverReady, metricsClient, wsServer)
 	if err := cmd.Start(); err != nil {
 		utils.LogError("Error Starting Cmd: %v", err)
+		os.Exit(1) // Exit with error code
 	}
+
+	// Add this code to wait for the command to finish
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			utils.LogError("Server process exited with error: %v", err)
+			// Initiate graceful shutdown
+			cancel()
+		} else {
+			utils.LogInfo("Server process exited normally")
+			cancel()
+		}
+	}()
 
 	// Handle termination signals
 	setupSignalHandler(cancel, serverState)

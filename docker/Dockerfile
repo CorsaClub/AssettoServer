@@ -145,5 +145,9 @@ ENV LOG_PATTERNS="error.log,server.log,access.log,chat.log,admin.log,connection.
 # Switch to non-root user
 USER acserver
 
+# Set the working directory
+WORKDIR /app
+
+# Use the wrapper as the entrypoint
 ENTRYPOINT ["/app/wrapper", "-i", "/app/start-server.sh"]
 
