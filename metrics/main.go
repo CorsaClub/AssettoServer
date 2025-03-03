@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -12,8 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -46,6 +50,9 @@ func (i *interceptor) Write(p []byte) (n int, err error) {
 func main() {
 	// At the beginning of main()
 	utils.LogInfo("Starting wrapper with TEST_MODE=%s", os.Getenv("TEST_MODE"))
+
+	// Create a WaitGroup to track goroutines
+	var wg sync.WaitGroup
 
 	// Configuration flags
 	input := flag.String("i", "./start-server.sh", "Path to server start script")
@@ -121,8 +128,18 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go metricsClient.StartMetricBuffer(ctx)
-	go logMonitor.Start(ctx)
+	// For each goroutine, add to the WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		metricsClient.StartMetricBuffer(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		logMonitor.Start(ctx)
+	}()
 
 	// Start monitoring
 	go monitoring.MonitorHealthMetrics(ctx, metricsClient, serverState)
@@ -155,6 +172,9 @@ func main() {
 		utils.LogError("Error Starting Cmd: %v", err)
 		os.Exit(1)
 	}
+
+	// Start monitoring the process
+	monitorProcessExit(cmd)
 
 	// Add this code to wait for the command to finish with detailed error reporting
 	go func() {
@@ -196,35 +216,130 @@ func main() {
 
 	// At the end of main()
 	utils.LogInfo("Main function completed, container should continue running")
+
+	// Block forever to keep the application running
+	utils.LogInfo("Blocking main goroutine to keep container alive")
+	blockForever := make(chan struct{})
+
+	// Add a goroutine to periodically log the application state
+	go func() {
+		stateTicker := time.NewTicker(60 * time.Second)
+		defer stateTicker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				utils.LogInfo("Context cancelled, stopping state logging")
+				return
+			case <-stateTicker.C:
+				// Log detailed application state
+				serverState.RLock()
+				utils.LogInfo("=== APPLICATION STATE ===")
+				utils.LogInfo("Server ID: %s, Name: %s, Region: %s",
+					serverState.ServerID, serverState.ServerName, serverState.ServerRegion)
+				utils.LogInfo("Ready: %v, Players: %d, ShuttingDown: %v",
+					serverState.Ready, serverState.Players, serverState.ShuttingDown)
+				utils.LogInfo("Session Type: %s, Session ID: %s",
+					serverState.CurrentSession.Type, serverState.CurrentSession.ID)
+				utils.LogInfo("Last Ping: %v (%v ago)",
+					serverState.LastPing, time.Since(serverState.LastPing))
+				utils.LogInfo("Connected Players: %d", len(serverState.ConnectedPlayers))
+				utils.LogInfo("Active Goroutines: %d", runtime.NumGoroutine())
+
+				var memStats runtime.MemStats
+				runtime.ReadMemStats(&memStats)
+				utils.LogInfo("Memory Usage: Alloc=%v MB, Sys=%v MB",
+					memStats.Alloc/1024/1024, memStats.Sys/1024/1024)
+
+				utils.LogInfo("=== END STATE ===")
+				serverState.RUnlock()
+			}
+		}
+	}()
+
+	// Add a goroutine to monitor for potential exit conditions
+	go func() {
+		utils.LogInfo("Starting exit condition monitor")
+		for {
+			time.Sleep(5 * time.Second)
+
+			// Check if main context is done
+			select {
+			case <-ctx.Done():
+				utils.LogInfo("Main context cancelled - this could lead to application exit")
+				utils.LogInfo("Context error: %v", ctx.Err())
+				break
+			default:
+				// Context still active
+			}
+
+			// Check server state
+			serverState.RLock()
+			if serverState.ShuttingDown {
+				utils.LogInfo("Server is in shutting down state - this could lead to application exit")
+			}
+			serverState.RUnlock()
+		}
+	}()
+
+	<-blockForever // This will block forever
 }
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
 // It sets up output interception and command arguments.
 func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer) *exec.Cmd {
-	utils.LogInfo("Preparing server command: %s %s", *input, *args)
+	utils.LogInfo("Preparing server command: %s", *input)
 
-	// Check if the input file exists and is executable
+	// Check if the script file exists and is executable
 	fileInfo, err := os.Stat(*input)
-	if os.IsNotExist(err) {
-		utils.LogError("Server script not found: %s", *input)
-		os.Exit(1)
-	}
-
-	// Check permissions
-	utils.LogInfo("Script file permissions: %s", fileInfo.Mode().String())
-
-	// Try to read the first few bytes of the script to verify it's accessible
-	file, err := os.Open(*input)
 	if err != nil {
-		utils.LogError("Failed to open script file: %v", err)
+		utils.LogError("Error checking script file: %v", err)
+		if os.IsNotExist(err) {
+			utils.LogError("Script file does not exist: %s", *input)
+			// List files in directory to help diagnose
+			dir := filepath.Dir(*input)
+			files, listErr := os.ReadDir(dir)
+			if listErr != nil {
+				utils.LogError("Error listing directory %s: %v", dir, listErr)
+			} else {
+				utils.LogInfo("Files in %s:", dir)
+				for _, file := range files {
+					utils.LogInfo("  %s (dir: %v, size: %d)",
+						file.Name(), file.IsDir(), file.Size())
+				}
+			}
+		}
 	} else {
-		defer file.Close()
-		buffer := make([]byte, 100)
-		n, err := file.Read(buffer)
+		// Log file permissions
+		mode := fileInfo.Mode()
+		utils.LogInfo("Script file permissions: %s", mode.String())
+
+		// Check if file is executable
+		if mode&0111 == 0 {
+			utils.LogWarning("Script file is not executable, attempting to make it executable")
+			if chmodErr := os.Chmod(*input, 0755); chmodErr != nil {
+				utils.LogError("Failed to make script executable: %v", chmodErr)
+			} else {
+				utils.LogInfo("Successfully made script executable")
+			}
+		}
+
+		// Read first few lines of the script for debugging
+		file, err := os.Open(*input)
 		if err != nil {
-			utils.LogError("Failed to read script file: %v", err)
+			utils.LogError("Failed to open script file: %v", err)
 		} else {
-			utils.LogInfo("Script file starts with: %s", string(buffer[:n]))
+			defer file.Close()
+			scanner := bufio.NewScanner(file)
+			lineCount := 0
+			utils.LogInfo("Script file contents (first 5 lines):")
+			for scanner.Scan() && lineCount < 5 {
+				utils.LogInfo("  %s", scanner.Text())
+				lineCount++
+			}
+			if err := scanner.Err(); err != nil {
+				utils.LogError("Error reading script file: %v", err)
+			}
 		}
 	}
 
@@ -235,7 +350,11 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 	cmd.Dir = "/app"
 
 	// Log the command details
-	utils.LogInfo("Command: %s, Args: %v, Dir: %s", cmd.Path, cmd.Args, cmd.Dir)
+	utils.LogInfo("Command details:")
+	utils.LogInfo("  Path: %s", cmd.Path)
+	utils.LogInfo("  Args: %v", cmd.Args)
+	utils.LogInfo("  Dir: %s", cmd.Dir)
+	utils.LogInfo("  Env vars: %d", len(cmd.Env))
 
 	// Set environment variables explicitly
 	cmd.Env = os.Environ()
@@ -319,23 +438,39 @@ func waitForServerEnd(ctx context.Context, serverReady chan struct{}, vmClient *
 // setupSignalHandler configures signal handling for graceful shutdown.
 func setupSignalHandler(cancel context.CancelFunc, state *types.ServerState) {
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
 	go func() {
 		sig := <-c
-		utils.LogSDK("Received signal %v, initiating shutdown", sig)
+		utils.LogInfo("=== SIGNAL RECEIVED ===")
+		utils.LogInfo("Received signal: %v", sig)
+		utils.LogInfo("Current goroutines: %d", runtime.NumGoroutine())
 
+		// Log server state
+		state.RLock()
+		utils.LogInfo("Server state at signal: Ready=%v, Players=%d, ShuttingDown=%v",
+			state.Ready, state.Players, state.ShuttingDown)
+		state.RUnlock()
+
+		// Set shutting down flag
 		state.Lock()
 		state.ShuttingDown = true
 		state.Unlock()
 
+		utils.LogInfo("Set ShuttingDown flag to true")
+
 		// Only cancel if not in test mode
 		if os.Getenv("TEST_MODE") != "true" {
+			utils.LogInfo("Calling cancel() to terminate context")
 			cancel()
 		} else {
-			utils.LogInfo("Received signal %v in test mode, ignoring shutdown request", sig)
+			utils.LogInfo("In TEST_MODE, ignoring shutdown request")
 		}
+
+		utils.LogInfo("=== END SIGNAL HANDLING ===")
 	}()
+
+	utils.LogInfo("Signal handler set up for SIGTERM, SIGINT, SIGHUP")
 }
 
 // logEvent logs important events
@@ -519,4 +654,36 @@ func startKeepAliveRoutine(ctx context.Context) {
 			utils.LogInfo("Keep-alive tick - container is still running")
 		}
 	}
+}
+
+// Add this function to monitor for process exit
+func monitorProcessExit(cmd *exec.Cmd) {
+	utils.LogInfo("Starting process exit monitor for PID %d", cmd.Process.Pid)
+
+	// Start a goroutine to periodically check if the process is still running
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			<-ticker.C
+
+			// Check if process is still running
+			process, err := os.FindProcess(cmd.Process.Pid)
+			if err != nil {
+				utils.LogWarning("Error finding process %d: %v", cmd.Process.Pid, err)
+				continue
+			}
+
+			// On Unix, FindProcess always succeeds, so we need to send signal 0
+			// to check if the process exists
+			err = process.Signal(syscall.Signal(0))
+			if err != nil {
+				utils.LogWarning("Process %d no longer exists: %v", cmd.Process.Pid, err)
+				return
+			}
+
+			utils.LogInfo("Process %d is still running", cmd.Process.Pid)
+		}
+	}()
 }
