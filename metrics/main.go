@@ -168,14 +168,38 @@ func main() {
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
 // It sets up output interception and command arguments.
 func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer) *exec.Cmd {
+	utils.LogInfo("Preparing server command: %s %s", *input, *args)
+
+	// Check if the input file exists
+	if _, err := os.Stat(*input); os.IsNotExist(err) {
+		utils.LogError("Server script not found: %s", *input)
+		os.Exit(1)
+	}
+
 	argsList := strings.Fields(*args)
 	cmd := exec.CommandContext(ctx, *input, argsList...)
-	cmd.Stderr = &interceptor{forward: os.Stderr}
+
+	// Set the working directory explicitly
+	cmd.Dir = "/app"
+
+	// Log the command details
+	utils.LogInfo("Command: %s, Args: %v, Dir: %s", cmd.Path, cmd.Args, cmd.Dir)
+
+	cmd.Stderr = &interceptor{
+		forward: os.Stderr,
+		intercept: func(p []byte) {
+			str := strings.TrimSpace(string(p))
+			utils.LogError("Server stderr: %s", str)
+		},
+	}
 
 	cmd.Stdout = &interceptor{
 		forward: os.Stdout,
 		intercept: func(p []byte) {
 			str := strings.TrimSpace(string(p))
+
+			// Log all server output for debugging
+			utils.LogInfo("Server stdout: %s", str)
 
 			// Créer une entrée de log
 			logEntry := types.LogEntry{

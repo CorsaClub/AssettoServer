@@ -145,9 +145,15 @@ ENV LOG_PATTERNS="error.log,server.log,access.log,chat.log,admin.log,connection.
 # Switch to non-root user
 USER acserver
 
-# Set the working directory
+# Set the working directory explicitly
 WORKDIR /app
 
-# Use the wrapper as the entrypoint
-ENTRYPOINT ["/app/wrapper", "-i", "/app/start-server.sh"]
+# Create a wrapper script that combines the metrics wrapper and server start
+RUN echo '#!/bin/bash' > /app/run.sh && \
+    echo 'cd /app' >> /app/run.sh && \
+    echo 'exec /app/wrapper -i /app/start-server.sh "$@"' >> /app/run.sh && \
+    chmod +x /app/run.sh
+
+# Use the wrapper script as the entrypoint
+ENTRYPOINT ["/app/run.sh"]
 

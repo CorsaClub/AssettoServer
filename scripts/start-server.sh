@@ -3,6 +3,13 @@
 # Enable verbose mode for debugging
 set -x
 
+# Add more debugging
+echo "Starting server script with PID $$"
+echo "Current directory: $(pwd)"
+echo "User: $(whoami)"
+echo "Environment variables:"
+env | sort
+
 while [ ! -f /shared-config/init_done ]; do
     echo "Waiting for init_done file..."
     sleep 1
@@ -27,7 +34,8 @@ fi
 chmod 755 /home/acserver/.steam/sdk64/steamclient.so || echo "Warning: Could not set steamclient.so permissions"
 
 # Ensure the AssettoServer directory exists and has correct permissions
-cd /app/AssettoServer || exit 1
+echo "Changing to AssettoServer directory..."
+cd /app/AssettoServer || { echo "Failed to change to /app/AssettoServer directory!"; exit 1; }
 
 # Copy entire config structure from /shared-config to current directory
 echo "Copying config from /shared-config to /app/AssettoServer..."
@@ -46,12 +54,22 @@ pwd
 echo "DEBUG: Current directory contents:"
 ls -la
 
+# Check if the AssettoServer executable exists
+if [ ! -f ./AssettoServer ]; then
+    echo "ERROR: AssettoServer executable not found!"
+    exit 1
+fi
+
+echo "DEBUG: AssettoServer file details:"
+file ./AssettoServer
+ls -la ./AssettoServer
+
 echo "[DEBUG] Check content of server_cfg.ini:"
-cat ./cfg/server_cfg.ini
+cat ./cfg/server_cfg.ini || echo "WARNING: server_cfg.ini not found!"
 
 echo "[DEBUG] Check content of entry_list.ini:"
-cat ./cfg/entry_list.ini
+cat ./cfg/entry_list.ini || echo "WARNING: entry_list.ini not found!"
 
 # Start Assetto Corsa Server
-echo "Starting Assetto Corsa Server..."
+echo "Starting Assetto Corsa Server with exec..."
 exec ./AssettoServer --plugins-from-workdir
