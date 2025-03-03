@@ -59,42 +59,42 @@ RUN mkdir -p /home/acserver/.steam/sdk64
 # Copy steam client from steam stage
 COPY --from=steam /home/steam/steamcmd/linux64/steamclient.* /home/acserver/.steam/sdk64/
 
-# Set proper permissions
-RUN chown -R acserver:acserver /home/acserver
-
 # Copy VictoriaMetrics wrapper
 COPY --from=victoria-metrics /app/wrapper .
 
 # Copy AssettoServer and set permissions
 COPY --from=build /app/out-linux-* ./AssettoServer/
 
-# Create shared-config directory with proper permissions
-RUN mkdir -p /shared-config && \
-    mkdir -p /var/log/acserver && \
-    chown -R acserver:acserver /app /shared-config && \
-    chown -R acserver:acserver /var/log/acserver && \
-    chmod -R 755 /app /shared-config && \
-    chmod -R 755 /var/log/acserver && \
-    chmod +x /app/AssettoServer/AssettoServer
-
 # Copy startup scripts
 COPY scripts/start-server.sh .
-RUN chmod +x start-server.sh
 
 # Copy steam script
 COPY scripts/steam-script.txt .
 RUN sed -i "s/\${STEAM_USERNAME}/${STEAM_USERNAME}/g" steam-script.txt && \
     sed -i "s/\${STEAM_PASSWORD}/${STEAM_PASSWORD}/g" steam-script.txt
 
-# Create log volume
-VOLUME ["/var/log/acserver"]
-
-WORKDIR /data
+# Create shared-config directory with proper permissions
+RUN mkdir -p /shared-config && \
+    mkdir -p /var/log/acserver && \
+    chmod +x /app/start-server.sh && \
+    chmod +x /app/wrapper
 
 # Add steamclient.so fallback location
 RUN mkdir -p /app/AssettoServer/ && \
     cp /home/acserver/.steam/sdk64/steamclient.so /app/AssettoServer/ && \
-    chmod +x /app/AssettoServer/steamclient.so
+    chmod +x /app/AssettoServer/steamclient.so && \
+    chmod +x /app/AssettoServer/AssettoServer
+
+# Set proper permissions for all directories and files
+RUN chown -R acserver:acserver /home/acserver && \
+    chown -R acserver:acserver /app && \
+    chown -R acserver:acserver /shared-config && \
+    chown -R acserver:acserver /var/log/acserver && \
+    chmod -R 755 /app /shared-config && \
+    chmod -R 755 /var/log/acserver
+
+# Create log volume
+VOLUME ["/var/log/acserver"]
 
 # Environment variables
 ENV GAMESERVER_ID=Unknown
@@ -145,12 +145,9 @@ ENV LOG_PATTERNS="error.log,server.log,access.log,chat.log,admin.log,connection.
 # Switch to non-root user
 USER acserver
 
-# Set the working directory explicitly
+# Set the working directory
 WORKDIR /app
 
-# Make sure the start script is executable
-RUN chmod +x /app/start-server.sh
-
-# Use a simpler entrypoint that directly calls the wrapper
+# Use the wrapper as the entrypoint
 ENTRYPOINT ["/app/wrapper", "-i", "/app/start-server.sh"]
 
