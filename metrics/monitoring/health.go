@@ -108,7 +108,7 @@ func isHealthy(state *types.ServerState) bool {
 
 // MonitorHealthMetrics surveille et met à jour les métriques de santé du serveur
 func MonitorHealthMetrics(ctx context.Context, vmClient *victoria.MetricsClient, state *types.ServerState) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -116,12 +116,58 @@ func MonitorHealthMetrics(ctx context.Context, vmClient *victoria.MetricsClient,
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Collecter les métriques
-			metricsData := collectMetrics(state)
+			// Create a clean set of labels without any JSON escaping issues
+			serverID := state.ServerID
+			serverName := state.ServerName
+			serverRegion := state.ServerRegion
 
-			// Envoyer à VictoriaMetrics
-			if err := vmClient.SendMetrics(metricsData); err != nil {
-				utils.LogWarning("Failed to send metrics: %v", err)
+			// Ensure labels are properly formatted
+			labels := map[string]string{
+				"server_id": serverID,
+				"name":      serverName,
+				"region":    serverRegion,
+				"type":      state.ServerType,
+			}
+
+			// Send metrics with explicit naming and clean labels
+			batch := types.MetricBatch{
+				Metrics: []types.Metric{
+					{
+						Name:        "assetto_server_health",
+						Value:       1,
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: labels,
+					},
+					{
+						Name:        "assetto_server_players_count",
+						Value:       float64(state.Players),
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: labels,
+					},
+					{
+						Name:        "assetto_server_health_timestamp",
+						Value:       float64(time.Now().Unix()),
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: labels,
+					},
+				},
+				Time: time.Now(),
+			}
+
+			// Send metrics and log the exact payload for debugging
+			utils.LogInfo("Sending metrics batch with %d metrics", len(batch.Metrics))
+			for _, m := range batch.Metrics {
+				utils.LogInfo("  - Metric: %s, Value: %f, Labels: %v",
+					m.Name, m.Value, m.LabelValues)
+			}
+
+			if err := vmClient.SendMetrics(batch); err != nil {
+				utils.LogError("Failed to send metrics: %v", err)
+			} else {
+				utils.LogInfo("Successfully sent metrics to VictoriaMetrics")
 			}
 		}
 	}

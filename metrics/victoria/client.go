@@ -20,6 +20,7 @@ import (
 	"metrics/config"
 	"metrics/models"
 	"metrics/types"
+	"metrics/utils"
 )
 
 // Renommer LogsClientImpl en LogsClient (le type concret)
@@ -456,6 +457,15 @@ func (c *MetricsClient) SendLogs(logs []models.LogEntry) error {
 }
 
 func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
+	// Log metrics being sent
+	utils.LogInfo("Sending %d metrics to VictoriaMetrics", len(batch.Metrics))
+	for i, metric := range batch.Metrics {
+		if i < 5 { // Log only first 5 metrics to avoid flooding logs
+			utils.LogInfo("  Metric: %s, Value: %f, Labels: %v",
+				metric.Name, metric.Value, metric.LabelValues)
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Victoria.RequestTimeout)
 	defer cancel()
 
@@ -497,10 +507,12 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
+	// After successful send
+	utils.LogInfo("Successfully sent %d metrics to VictoriaMetrics", len(batch.Metrics))
 	return nil
 }
 

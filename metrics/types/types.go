@@ -30,6 +30,7 @@ type ServerState struct {
 	TickRate         float64            // Current tick rate
 	CurrentSession   *Session           // Current active session
 	ShuttingDown     bool               // Indicates if the server is shutting down
+	StartTime        time.Time          // Add this field
 }
 
 // Player represents a player connected to the server.

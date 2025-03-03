@@ -61,13 +61,16 @@ func main() {
 	flag.Parse()
 
 	// In main() function, after flag parsing
-	serverID := os.Getenv("GAMESERVER_ID") // Use Agones ID if running in Kubernetes
+	serverID := os.Getenv("GAMESERVER_ID")
+	if serverID == "" {
+		serverID = utils.GenerateServerID()
+		utils.LogInfo("Generated server ID: %s", serverID)
+	} else {
+		utils.LogInfo("Using environment server ID: %s", serverID)
+	}
+
 	serverRegion := os.Getenv("GAMESERVER_REGION")
 	serverName := os.Getenv("SERVER_NAME")
-
-	if serverID == "" {
-		serverID = utils.GenerateServerID() // Fallback to generated ID
-	}
 
 	// Initialize server state with ID
 	serverState := &types.ServerState{
@@ -76,6 +79,7 @@ func main() {
 		ServerName:       serverName,
 		ServerType:       os.Getenv("SERVER_TYPE"),
 		LastPing:         time.Now(),
+		StartTime:        time.Now(),
 		ConnectedPlayers: make(map[string]*types.Player),
 		ActiveCars:       make(map[string]int),
 		CurrentSession: &types.Session{
@@ -213,6 +217,10 @@ func main() {
 
 	// Initialize HTTP server for health checks
 	initHealthServer(serverState, wsServer)
+
+	// After initializing the metrics client
+	utils.LogInfo("Testing VictoriaMetrics connection")
+	testVictoriaMetricsConnection(metricsClient, serverID)
 
 	// At the end of main()
 	utils.LogInfo("Main function completed, container should continue running")
@@ -619,6 +627,10 @@ func initVictoriaMetrics() *victoria.MetricsClient {
 		}
 	}
 
+	utils.LogInfo("Initializing VictoriaMetrics client with URL: %s", cfg.Victoria.URL)
+	utils.LogInfo("VictoriaMetrics Username: %s", cfg.Victoria.Username)
+	utils.LogInfo("VictoriaMetrics Password: %s", strings.Repeat("*", len(cfg.Victoria.Password)))
+
 	return victoria.NewClient(cfg)
 }
 
@@ -693,4 +705,33 @@ func monitorProcessExit(cmd *exec.Cmd) {
 			utils.LogInfo("Process %d is still running", cmd.Process.Pid)
 		}
 	}()
+}
+
+// Add this function to test VictoriaMetrics connectivity
+func testVictoriaMetricsConnection(client *victoria.MetricsClient, serverID string) {
+	// Create a simple test metric
+	testMetric := types.MetricBatch{
+		Metrics: []types.Metric{
+			{
+				Name:      "assetto_server_test_connection",
+				Value:     1,
+				Type:      types.Counter,
+				Timestamp: time.Now(),
+				LabelValues: map[string]string{
+					"server_id": serverID,
+					"test":      "true",
+					"timestamp": time.Now().Format(time.RFC3339),
+				},
+			},
+		},
+		Time: time.Now(),
+	}
+
+	// Send the test metric
+	utils.LogInfo("Sending test connection metric to VictoriaMetrics")
+	if err := client.SendMetrics(testMetric); err != nil {
+		utils.LogError("Failed to send test metric: %v", err)
+	} else {
+		utils.LogInfo("Successfully sent test metric to VictoriaMetrics")
+	}
 }
