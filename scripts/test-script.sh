@@ -8,5 +8,9 @@ echo "Environment variables:"
 env | sort
 echo "Test script completed successfully"
 
-# Sleep to keep the script running
-sleep 300 
+# Keep the script running indefinitely
+echo "Entering infinite loop to keep container alive"
+while true; do
+    echo "Test script heartbeat: $(date)"
+    sleep 60
+done 

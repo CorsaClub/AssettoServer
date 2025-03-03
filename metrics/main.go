@@ -44,6 +44,9 @@ func (i *interceptor) Write(p []byte) (n int, err error) {
 // It initializes the Agones SDK, starts the Assetto Corsa server,
 // and manages the server's lifecycle including health checks and metrics.
 func main() {
+	// At the beginning of main()
+	utils.LogInfo("Starting wrapper with TEST_MODE=%s", os.Getenv("TEST_MODE"))
+
 	// Configuration flags
 	input := flag.String("i", "./start-server.sh", "Path to server start script")
 	args := flag.String("args", "", "Arguments for the server")
@@ -164,11 +167,24 @@ func main() {
 			} else {
 				utils.LogError("Server process exited with error: %v", err)
 			}
-			// Initiate graceful shutdown
-			cancel()
+			// Only initiate graceful shutdown if this is not a test mode
+			if os.Getenv("TEST_MODE") != "true" {
+				cancel()
+			} else {
+				utils.LogInfo("Test script completed, but keeping container alive")
+				// In test mode, start a simple keep-alive routine
+				startKeepAliveRoutine(ctx)
+			}
 		} else {
 			utils.LogInfo("Server process exited normally")
-			cancel()
+			// Only initiate graceful shutdown if this is not a test mode
+			if os.Getenv("TEST_MODE") != "true" {
+				cancel()
+			} else {
+				utils.LogInfo("Test script completed, but keeping container alive")
+				// In test mode, start a simple keep-alive routine
+				startKeepAliveRoutine(ctx)
+			}
 		}
 	}()
 
@@ -177,6 +193,9 @@ func main() {
 
 	// Initialize HTTP server for health checks
 	initHealthServer(serverState, wsServer)
+
+	// At the end of main()
+	utils.LogInfo("Main function completed, container should continue running")
 }
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
@@ -299,18 +318,23 @@ func waitForServerEnd(ctx context.Context, serverReady chan struct{}, vmClient *
 
 // setupSignalHandler configures signal handling for graceful shutdown.
 func setupSignalHandler(cancel context.CancelFunc, state *types.ServerState) {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		sig := <-sigChan
+		sig := <-c
 		utils.LogSDK("Received signal %v, initiating shutdown", sig)
 
 		state.Lock()
 		state.ShuttingDown = true
 		state.Unlock()
 
-		cancel()
+		// Only cancel if not in test mode
+		if os.Getenv("TEST_MODE") != "true" {
+			cancel()
+		} else {
+			utils.LogInfo("Received signal %v in test mode, ignoring shutdown request", sig)
+		}
 	}()
 }
 
@@ -336,6 +360,13 @@ func initHealthServer(state *types.ServerState, wsServer *websocket.WebSocketSer
 
 	// Add HTTP health endpoint
 	healthMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		// In test mode, always return healthy
+		if os.Getenv("TEST_MODE") == "true" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("OK (Test Mode)"))
+			return
+		}
+
 		state.RLock()
 		defer state.RUnlock()
 
@@ -470,4 +501,22 @@ func initVictoriaLogs() victoria.LogsClient {
 	}
 
 	return victoria.NewLogsClient(&cfg.VictoriaLogs)
+}
+
+// Add this function to keep the container alive in test mode
+func startKeepAliveRoutine(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	utils.LogInfo("Starting keep-alive routine")
+
+	for {
+		select {
+		case <-ctx.Done():
+			utils.LogInfo("Context cancelled, stopping keep-alive routine")
+			return
+		case <-ticker.C:
+			utils.LogInfo("Keep-alive tick - container is still running")
+		}
+	}
 }
