@@ -140,16 +140,30 @@ func main() {
 
 	// Prepare and start the server
 	serverReady := make(chan struct{}, 1)
-	cmd := prepareServerCommand(ctx, input, args, serverState, serverReady, metricsClient, wsServer)
+	var scriptPath string
+	if os.Getenv("TEST_MODE") == "true" {
+		scriptPath = "/app/test-script.sh"
+		utils.LogInfo("Running in test mode with script: %s", scriptPath)
+	} else {
+		scriptPath = *input
+	}
+	cmd := prepareServerCommand(ctx, &scriptPath, args, serverState, serverReady, metricsClient, wsServer)
 	if err := cmd.Start(); err != nil {
 		utils.LogError("Error Starting Cmd: %v", err)
-		os.Exit(1) // Exit with error code
+		os.Exit(1)
 	}
 
-	// Add this code to wait for the command to finish
+	// Add this code to wait for the command to finish with detailed error reporting
 	go func() {
 		if err := cmd.Wait(); err != nil {
-			utils.LogError("Server process exited with error: %v", err)
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				utils.LogError("Server process exited with code %d: %v", exitErr.ExitCode(), err)
+				if exitErr.Stderr != nil {
+					utils.LogError("Server stderr: %s", string(exitErr.Stderr))
+				}
+			} else {
+				utils.LogError("Server process exited with error: %v", err)
+			}
 			// Initiate graceful shutdown
 			cancel()
 		} else {
@@ -170,10 +184,29 @@ func main() {
 func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer) *exec.Cmd {
 	utils.LogInfo("Preparing server command: %s %s", *input, *args)
 
-	// Check if the input file exists
-	if _, err := os.Stat(*input); os.IsNotExist(err) {
+	// Check if the input file exists and is executable
+	fileInfo, err := os.Stat(*input)
+	if os.IsNotExist(err) {
 		utils.LogError("Server script not found: %s", *input)
 		os.Exit(1)
+	}
+
+	// Check permissions
+	utils.LogInfo("Script file permissions: %s", fileInfo.Mode().String())
+
+	// Try to read the first few bytes of the script to verify it's accessible
+	file, err := os.Open(*input)
+	if err != nil {
+		utils.LogError("Failed to open script file: %v", err)
+	} else {
+		defer file.Close()
+		buffer := make([]byte, 100)
+		n, err := file.Read(buffer)
+		if err != nil {
+			utils.LogError("Failed to read script file: %v", err)
+		} else {
+			utils.LogInfo("Script file starts with: %s", string(buffer[:n]))
+		}
 	}
 
 	argsList := strings.Fields(*args)
@@ -184,6 +217,9 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 
 	// Log the command details
 	utils.LogInfo("Command: %s, Args: %v, Dir: %s", cmd.Path, cmd.Args, cmd.Dir)
+
+	// Set environment variables explicitly
+	cmd.Env = os.Environ()
 
 	cmd.Stderr = &interceptor{
 		forward: os.Stderr,
@@ -201,7 +237,7 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 			// Log all server output for debugging
 			utils.LogInfo("Server stdout: %s", str)
 
-			// Créer une entrée de log
+			// Create log entry
 			logEntry := types.LogEntry{
 				Timestamp: time.Now(),
 				Level:     "INFO",
@@ -210,10 +246,10 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 				SessionID: state.CurrentSession.ID,
 			}
 
-			// Envoyer au WebSocket
+			// Send to WebSocket
 			wsServer.BroadcastLog(logEntry)
 
-			// Traiter normalement le log
+			// Process log normally
 			handlers.HandleServerOutput(str, vmClient, state, serverReady, nil)
 		},
 	}

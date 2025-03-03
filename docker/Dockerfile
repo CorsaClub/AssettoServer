@@ -142,6 +142,10 @@ ENV LOG_MAX_FILE_SIZE=100MB
 ENV LOG_MAX_FILES=10
 ENV LOG_PATTERNS="error.log,server.log,access.log,chat.log,admin.log,connection.log"
 
+# Add the test script
+COPY scripts/test-script.sh .
+RUN chmod +x /app/test-script.sh
+
 # Switch to non-root user
 USER acserver
 
