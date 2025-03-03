@@ -539,12 +539,13 @@ func initHealthServer(state *types.ServerState, wsServer *websocket.WebSocketSer
 	// Start HTTP server for health checks on a separate port
 	go func() {
 		server := &http.Server{
-			Addr:         ":9001",
+			Addr:         ":9600",
 			Handler:      healthMux,
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: 5 * time.Second,
 		}
 
+		utils.LogInfo("Starting health check server on port 9600")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			utils.LogError("HTTP health server error: %v", err)
 		}
