@@ -1,75 +1,79 @@
 #!/bin/bash
 
-# Enable verbose mode for debugging
-set -x
+# Disable verbose mode temporarily to make logs cleaner
+set +x
 
-# Add more debugging
-echo "Starting server script with PID $$"
+echo "==============================================="
+echo "Starting Assetto Corsa Server Wrapper"
+echo "==============================================="
 echo "Current directory: $(pwd)"
 echo "User: $(whoami)"
-echo "Environment variables:"
-env | sort
+echo "Date: $(date)"
 
+# Re-enable verbose mode
+set -x
+
+# Wait for initialization to complete
 while [ ! -f /shared-config/init_done ]; do
-    echo "Waiting for init_done file..."
-    sleep 1
+    echo "Waiting for initialization to complete..."
+    sleep 2
 done
 
-echo "Init done file found, server booting..."
+echo "Initialization complete, proceeding with server startup"
 
-# Check if steamclient.so exists
+# Check for steamclient.so
 if [ ! -f /home/acserver/.steam/sdk64/steamclient.so ]; then
-    echo "steamclient.so not found in .steam/sdk64, checking fallback location..."
+    echo "Setting up Steam client library..."
+    mkdir -p /home/acserver/.steam/sdk64
     if [ -f /app/AssettoServer/steamclient.so ]; then
-        echo "Using fallback steamclient.so"
-        mkdir -p /home/acserver/.steam/sdk64
         cp /app/AssettoServer/steamclient.so /home/acserver/.steam/sdk64/
+        chmod 755 /home/acserver/.steam/sdk64/steamclient.so
     else
-        echo "Error: steamclient.so not found in any location!"
+        echo "ERROR: steamclient.so not found!"
         exit 1
     fi
 fi
 
-# Ensure proper permissions for Steam files
-chmod 755 /home/acserver/.steam/sdk64/steamclient.so || echo "Warning: Could not set steamclient.so permissions"
-
-# Ensure the AssettoServer directory exists and has correct permissions
-echo "Changing to AssettoServer directory..."
-cd /app/AssettoServer || { echo "Failed to change to /app/AssettoServer directory!"; exit 1; }
-
-# Copy entire config structure from /shared-config to current directory
-echo "Copying config from /shared-config to /app/AssettoServer..."
-cp -rfv /shared-config/* . || echo "Warning: Could not copy config files"
-
-echo "Setting proper permissions for all files..."
-find . -type f -not -name "steamclient.so" -exec chmod 644 {} \;
-find . -type d -exec chmod 755 {} \;
-
-# Make sure the server executable is executable
-chmod +x ./AssettoServer
-
-# DEBUG
-echo "DEBUG: Current directory:"
-pwd
-echo "DEBUG: Current directory contents:"
-ls -la
-
-# Check if the AssettoServer executable exists
-if [ ! -f ./AssettoServer ]; then
-    echo "ERROR: AssettoServer executable not found!"
+# Change to server directory
+echo "Changing to server directory..."
+if [ ! -d /app/AssettoServer ]; then
+    echo "ERROR: Server directory not found!"
+    ls -la /app
     exit 1
 fi
 
-echo "DEBUG: AssettoServer file details:"
-file ./AssettoServer
-ls -la ./AssettoServer
+cd /app/AssettoServer || exit 1
+echo "Current directory: $(pwd)"
 
-echo "[DEBUG] Check content of server_cfg.ini:"
-cat ./cfg/server_cfg.ini || echo "WARNING: server_cfg.ini not found!"
+# Copy configuration
+echo "Copying configuration files..."
+cp -rf /shared-config/* . || echo "Warning: Some files could not be copied"
 
-echo "[DEBUG] Check content of entry_list.ini:"
-cat ./cfg/entry_list.ini || echo "WARNING: entry_list.ini not found!"
+# Set permissions
+echo "Setting file permissions..."
+find . -type f -not -path "*/\.*" -exec chmod 644 {} \;
+find . -type d -not -path "*/\.*" -exec chmod 755 {} \;
+chmod +x ./AssettoServer
 
-# Start Assetto Corsa Server
-echo "Starting Assetto Corsa Server with exec..."
+# Verify server executable
+if [ ! -f ./AssettoServer ]; then
+    echo "ERROR: AssettoServer executable not found!"
+    ls -la
+    exit 1
+fi
+
+echo "Server executable found: $(ls -la ./AssettoServer)"
+
+# Check for critical configuration files
+if [ ! -f ./cfg/server_cfg.ini ]; then
+    echo "ERROR: server_cfg.ini not found!"
+    ls -la ./cfg/
+    exit 1
+fi
+
+echo "==============================================="
+echo "Starting Assetto Corsa Server"
+echo "==============================================="
+
+# Execute the server with exec to replace the current process
 exec ./AssettoServer --plugins-from-workdir

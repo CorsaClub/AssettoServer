@@ -148,12 +148,9 @@ USER acserver
 # Set the working directory explicitly
 WORKDIR /app
 
-# Create a wrapper script that combines the metrics wrapper and server start
-RUN echo '#!/bin/bash' > /app/run.sh && \
-    echo 'cd /app' >> /app/run.sh && \
-    echo 'exec /app/wrapper -i /app/start-server.sh "$@"' >> /app/run.sh && \
-    chmod +x /app/run.sh
+# Make sure the start script is executable
+RUN chmod +x /app/start-server.sh
 
-# Use the wrapper script as the entrypoint
-ENTRYPOINT ["/app/run.sh"]
+# Use a simpler entrypoint that directly calls the wrapper
+ENTRYPOINT ["/app/wrapper", "-i", "/app/start-server.sh"]
 
