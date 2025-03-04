@@ -157,17 +157,9 @@ func MonitorHealthMetrics(ctx context.Context, vmClient *victoria.MetricsClient,
 				Time: time.Now(),
 			}
 
-			// Send metrics and log the exact payload for debugging
-			utils.LogInfo("Sending metrics batch with %d metrics", len(batch.Metrics))
-			for _, m := range batch.Metrics {
-				utils.LogInfo("  - Metric: %s, Value: %f, Labels: %v",
-					m.Name, m.Value, m.LabelValues)
-			}
-
+			// Pas de logs détaillés avant l'envoi
 			if err := vmClient.SendMetrics(batch); err != nil {
-				utils.LogError("Failed to send metrics: %v", err)
-			} else {
-				utils.LogInfo("Successfully sent metrics to VictoriaMetrics")
+				utils.LogError("Échec de l'envoi des métriques de santé: %v", err)
 			}
 		}
 	}
@@ -481,16 +473,13 @@ func MonitorDetailedMetrics(ctx context.Context, vmClient *victoria.MetricsClien
 			utils.LogInfo("Arrêt du monitoring détaillé des métriques")
 			return
 		case <-ticker.C:
-			// Collecter et envoyer les métriques détaillées
+			// Collecter et envoyer les métriques détaillées sans log préalable
 			batch := collectMetrics(state)
 
-			// Log simplifié avant envoi
-			utils.LogInfo("Envoi de %d métriques détaillées", len(batch.Metrics))
-
+			// Pas de log avant l'envoi - le log sera fait dans sendToVictoriaMetrics
 			if err := vmClient.SendMetrics(batch); err != nil {
 				utils.LogError("Échec de l'envoi des métriques détaillées: %v", err)
 			}
-			// Pas de log en cas de succès pour réduire le bruit
 		}
 	}
 }

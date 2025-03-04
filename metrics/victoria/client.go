@@ -427,30 +427,14 @@ func (c *MetricsClient) SendLogs(logs []models.LogEntry) error {
 }
 
 func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
-	// Log simplifié des métriques envoyées
-	utils.LogInfo("Envoi de %d métriques à VictoriaMetrics", len(batch.Metrics))
+	// Pas de log initial - nous loggons uniquement le résultat final
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Victoria.RequestTimeout)
 	defer cancel()
 
-	// Utiliser le format texte Prometheus
 	data, err := c.formatMetricsPrometheus(batch)
 	if err != nil {
 		return fmt.Errorf("error formatting metrics: %w", err)
-	}
-
-	// Ne pas logger le payload complet en production
-	if os.Getenv("DEBUG_METRICS") == "true" {
-		// Limiter à quelques lignes pour éviter de polluer les logs
-		lines := strings.Split(string(data), "\n")
-		sampleSize := 3
-		if len(lines) > sampleSize {
-			utils.LogInfo("Échantillon du payload (%d/%d lignes):\n%s",
-				sampleSize, len(lines),
-				strings.Join(lines[:sampleSize], "\n"))
-		} else {
-			utils.LogInfo("Payload complet:\n%s", string(data))
-		}
 	}
 
 	var body io.Reader = bytes.NewBuffer(data)
@@ -482,20 +466,20 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		utils.LogError("Échec de la requête HTTP: %v", err)
+		utils.LogError("Échec de l'envoi de %d métriques: %v", len(batch.Metrics), err)
 		return fmt.Errorf("error sending metrics: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// En cas d'erreur uniquement, lire et logger la réponse
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
-		utils.LogError("Statut de réponse inattendu: %d, corps: %s", resp.StatusCode, string(respBody))
+		utils.LogError("Échec de l'envoi de %d métriques (code %d): %s",
+			len(batch.Metrics), resp.StatusCode, string(respBody))
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	// Log simplifié en cas de succès
-	utils.LogInfo("Métriques envoyées avec succès")
+	// Un seul log concis en cas de succès
+	utils.LogInfo("Envoi réussi de %d métriques", len(batch.Metrics))
 	return nil
 }
 
