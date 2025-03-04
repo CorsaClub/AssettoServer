@@ -129,6 +129,23 @@ func (lm *LogMonitor) Start(ctx context.Context) {
 
 func (lm *LogMonitor) monitorLog(ctx context.Context, pattern string) {
 	logPath := filepath.Join(lm.logDir, pattern)
+
+	// Vérifier si le fichier existe, sinon attendre qu'il soit créé
+	for {
+		if _, err := os.Stat(logPath); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+			utils.LogInfo("Waiting for log file to be created: %s", logPath)
+		}
+	}
+
+	utils.LogInfo("Monitoring log file: %s", logPath)
+
+	// Ouvrir le fichier et se positionner à la fin
 	file, err := os.Open(logPath)
 	if err != nil {
 		utils.LogError("Failed to open log file %s: %v", logPath, err)
@@ -136,30 +153,56 @@ func (lm *LogMonitor) monitorLog(ctx context.Context, pattern string) {
 	}
 	defer file.Close()
 
+	// Se positionner à la fin du fichier pour ne lire que les nouvelles entrées
+	if _, err := file.Seek(0, 2); err != nil {
+		utils.LogError("Failed to seek to end of file %s: %v", logPath, err)
+		return
+	}
+
 	reader := bufio.NewReader(file)
 	logs := make([]models.LogEntry, 0, lm.batchSize)
 	ticker := time.NewTicker(lm.batchTimer)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
-			lm.processBatch(logs)
+			if len(logs) > 0 {
+				lm.processBatch(logs)
+			}
 			return
 		case <-ticker.C:
-			lm.processBatch(logs)
-			logs = make([]models.LogEntry, 0, lm.batchSize)
+			if len(logs) > 0 {
+				lm.processBatch(logs)
+				logs = make([]models.LogEntry, 0, lm.batchSize)
+			}
 		default:
 			line, err := reader.ReadString('\n')
 			if err != nil {
-				time.Sleep(time.Second)
+				// Si EOF, attendre de nouvelles données
+				time.Sleep(500 * time.Millisecond)
 				continue
+			}
+
+			// Nettoyer la ligne
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			// Appeler le callback si défini
+			if lm.lineCallback != nil {
+				lm.lineCallback(line)
 			}
 
 			// Analyser le log
 			logLevel, eventType := lm.analyzeLine(line)
 			if logLevel != "" {
+				timestamp := time.Now()
 				logs = append(logs, models.LogEntry{
-					Level:   logLevel,
-					Message: line,
+					Timestamp: timestamp,
+					Level:     logLevel,
+					Message:   line,
 					Labels: map[string]string{
 						"log_file":   pattern,
 						"source":     "assetto_server",
@@ -259,41 +302,28 @@ func (lm *LogMonitor) processBatch(logs []models.LogEntry) {
 		return
 	}
 
-	now := time.Now()
-	// Nettoyer les entrées plus vieilles que 1 heure
-	for msg, timestamp := range lm.seenLogs {
-		if now.Sub(timestamp) > time.Hour {
-			delete(lm.seenLogs, msg)
-		}
-	}
+	// Convertir les logs en format VictoriaLogs
+	victoriaLogs := make([]types.Log, 0, len(logs))
 
-	// Dédupliquer les logs similaires
-	deduped := make(map[string]models.LogEntry)
 	for _, log := range logs {
-		// Utiliser le message comme clé de déduplication
+		// Ajouter uniquement les logs qui n'ont pas été vus récemment
 		if _, seen := lm.seenLogs[log.Message]; !seen {
-			deduped[log.Message] = log
-			lm.seenLogs[log.Message] = now
+			lm.seenLogs[log.Message] = time.Now()
+
+			victoriaLogs = append(victoriaLogs, types.Log{
+				Timestamp: log.Timestamp,
+				Level:     log.Level,
+				Message:   log.Message,
+				Source:    "acserver",
+				Labels:    log.Labels,
+			})
 		}
 	}
 
-	// Envoyer les logs dédupliqués
-	if len(deduped) > 0 {
-		values := make([]models.LogEntry, 0, len(deduped))
-		for _, v := range deduped {
-			values = append(values, v)
+	// Envoyer les logs à VictoriaLogs
+	if len(victoriaLogs) > 0 {
+		if err := lm.logsClient.SendLogs(victoriaLogs); err != nil {
+			utils.LogError("Failed to send logs to VictoriaLogs: %v", err)
 		}
-		// Convert models.LogEntry to types.Log
-		logs := make([]types.Log, len(values))
-		for i, v := range values {
-			logs[i] = types.Log{
-				Timestamp: v.Timestamp,
-				Level:     v.Level,
-				Message:   v.Message,
-				Labels:    v.Labels,
-				Source:    "acserver",
-			}
-		}
-		lm.logsClient.SendLogs(logs)
 	}
 }
