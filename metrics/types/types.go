@@ -138,11 +138,11 @@ const (
 	LogLevelError   = "error"
 )
 
-// Ajout d'un type pour les logs
+// Log représente une entrée de log à envoyer à VictoriaLogs
 type Log struct {
 	Timestamp time.Time         `json:"timestamp"`
 	Level     string            `json:"level"`
 	Message   string            `json:"message"`
-	Labels    map[string]string `json:"labels,omitempty"`
 	Source    string            `json:"source"`
+	Labels    map[string]string `json:"-"` // Les labels seront ajoutés comme champs individuels
 }

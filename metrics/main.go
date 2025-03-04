@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -453,46 +452,6 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 	return cmd
 }
 
-// waitForServerEnd waits for the server to signal readiness.
-// It returns an error if the server fails to become ready within the timeout period.
-func waitForServerEnd(ctx context.Context, serverReady chan struct{}, vmClient *victoria.MetricsClient, reserveDuration time.Duration) {
-	select {
-	case <-serverReady:
-		utils.LogSDK("Server reported ready")
-		vmClient.SendMetrics(types.MetricBatch{
-			Metrics: []types.Metric{
-				{
-					Name:        "server_ready",
-					Value:       1,
-					Type:        types.Gauge,
-					Timestamp:   time.Now(),
-					LabelValues: map[string]string{},
-				},
-			},
-			Time: time.Now(),
-		})
-	case <-ctx.Done():
-		utils.LogSDK("Context cancelled, initiating graceful shutdown")
-		return
-	}
-
-	// Add graceful shutdown handling
-	<-ctx.Done()
-	utils.LogSDK("Server shutdown initiated")
-	vmClient.SendMetrics(types.MetricBatch{
-		Metrics: []types.Metric{
-			{
-				Name:        "server_shutdown",
-				Value:       1,
-				Type:        types.Gauge,
-				Timestamp:   time.Now(),
-				LabelValues: map[string]string{},
-			},
-		},
-		Time: time.Now(),
-	})
-}
-
 // Enhanced signal handler with more detailed logging
 func setupSignalHandler(cancel context.CancelFunc, state *types.ServerState) {
 	c := make(chan os.Signal, 1)
@@ -529,21 +488,6 @@ func setupSignalHandler(cancel context.CancelFunc, state *types.ServerState) {
 	}()
 
 	utils.LogInfo("Signal handler set up for SIGTERM, SIGINT, SIGHUP")
-}
-
-// logEvent logs important events
-func logEvent(eventType string, message string, state *types.ServerState) {
-	sessionType := "unknown"
-	if state.CurrentSession != nil {
-		sessionType = state.CurrentSession.Type
-	}
-
-	log.Printf("[%s] %s | Server: %s | Players: %d | Session: %s",
-		eventType,
-		message,
-		state.ServerName,
-		state.Players,
-		sessionType)
 }
 
 // initHealthServer initializes and exposes health check endpoints
@@ -670,17 +614,6 @@ func initVictoriaMetrics() *victoria.MetricsClient {
 			cfg.Metrics.Compression = val
 		}
 	}
-
-	utils.LogInfo("Initializing VictoriaMetrics client with URL: %s", cfg.Victoria.URL)
-	utils.LogInfo("VictoriaMetrics Username: %s", cfg.Victoria.Username)
-	utils.LogInfo("VictoriaMetrics Password: %s", strings.Repeat("*", len(cfg.Victoria.Password)))
-	utils.LogInfo("VictoriaMetrics configuration:")
-	utils.LogInfo("  URL: %s", cfg.Victoria.URL)
-	utils.LogInfo("  Username: %s", cfg.Victoria.Username)
-	utils.LogInfo("  BatchSize: %d", cfg.Metrics.BatchSize)
-	utils.LogInfo("  FlushInterval: %v", cfg.Metrics.FlushInterval)
-	utils.LogInfo("  BufferSize: %d", cfg.Metrics.BufferSize)
-	utils.LogInfo("  Compression: %v", cfg.Metrics.Compression)
 
 	return victoria.NewClient(cfg)
 }

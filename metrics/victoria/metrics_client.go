@@ -2,7 +2,6 @@ package victoria
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"net"
@@ -542,74 +541,6 @@ func (c *MetricsClient) handleError(err error, code string, retryable bool) erro
 // Add this method to Client
 func (c *MetricsClient) Buffer() chan types.MetricBatch {
 	return c.buffer
-}
-
-func (c *LogsClientImpl) SendLogs(logs []types.Log) error {
-	if len(logs) == 0 {
-		return nil
-	}
-
-	// Convertir les logs en format JSON
-	jsonLogs, err := c.formatLogsJSON(logs)
-	if err != nil {
-		return fmt.Errorf("error formatting logs: %w", err)
-	}
-
-	// Créer la requête HTTP
-	req, err := http.NewRequest("POST", c.config.URL+"/api/v1/write", bytes.NewBuffer(jsonLogs))
-	if err != nil {
-		return fmt.Errorf("error creating request: %w", err)
-	}
-
-	// Ajouter les en-têtes
-	req.Header.Set("Content-Type", "application/json")
-
-	// Ajouter l'authentification si nécessaire
-	if c.config.Username != "" && c.config.Password != "" {
-		req.SetBasicAuth(c.config.Username, c.config.Password)
-	}
-
-	// Envoyer la requête
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		utils.LogError("Failed to send logs to VictoriaLogs: %v", err)
-		return fmt.Errorf("error sending logs: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Vérifier la réponse
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		utils.LogError("VictoriaLogs returned non-OK status: %d, body: %s", resp.StatusCode, string(body))
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	utils.LogDebug("Successfully sent %d logs to VictoriaLogs", len(logs))
-	return nil
-}
-
-// Fonction pour formater les logs en JSON
-func (c *LogsClientImpl) formatLogsJSON(logs []types.Log) ([]byte, error) {
-	type jsonLog struct {
-		Timestamp string            `json:"timestamp"`
-		Level     string            `json:"level"`
-		Message   string            `json:"message"`
-		Source    string            `json:"source"`
-		Labels    map[string]string `json:"labels,omitempty"`
-	}
-
-	jsonLogs := make([]jsonLog, len(logs))
-	for i, log := range logs {
-		jsonLogs[i] = jsonLog{
-			Timestamp: log.Timestamp.Format(time.RFC3339),
-			Level:     log.Level,
-			Message:   log.Message,
-			Source:    log.Source,
-			Labels:    log.Labels,
-		}
-	}
-
-	return json.Marshal(jsonLogs)
 }
 
 // GetErrorCount returns the number of errors of a specific type
