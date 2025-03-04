@@ -467,3 +467,24 @@ func getProcessMemoryUsage() (uint64, error) {
 
 	return 0, fmt.Errorf("VmRSS not found in /proc/self/status")
 }
+
+// MonitorDetailedMetrics envoie régulièrement les métriques détaillées à VictoriaMetrics
+func MonitorDetailedMetrics(ctx context.Context, vmClient *victoria.MetricsClient, state *types.ServerState) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Collecter et envoyer les métriques détaillées
+			batch := collectMetrics(state)
+			if err := vmClient.SendMetrics(batch); err != nil {
+				utils.LogError("Failed to send detailed metrics: %v", err)
+			} else {
+				utils.LogInfo("Successfully sent %d detailed metrics to VictoriaMetrics", len(batch.Metrics))
+			}
+		}
+	}
+}

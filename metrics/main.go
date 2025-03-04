@@ -148,6 +148,7 @@ func main() {
 	// Start monitoring
 	go monitoring.MonitorHealthMetrics(ctx, metricsClient, serverState)
 	go monitoring.MonitorSystemResources(ctx, serverState)
+	go monitoring.MonitorDetailedMetrics(ctx, metricsClient, serverState)
 
 	// Démarrer le monitoring des performances internes
 	go metrics.StartPerformanceMonitoring(ctx, metricsClient)
