@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -366,88 +367,57 @@ func (c *MetricsClient) SendMetrics(batch types.MetricBatch) error {
 	return c.sendToVictoriaMetrics(batch)
 }
 
-// formatMetrics converts metrics to VictoriaMetrics format
-func formatMetrics(batch types.MetricBatch) ([]byte, error) {
-	points := make([]MetricPoint, 0, len(batch.Metrics))
+// formatMetricsPrometheus convertit les métriques au format texte Prometheus
+func (c *MetricsClient) formatMetricsPrometheus(batch types.MetricBatch) ([]byte, error) {
+	var builder strings.Builder
 
 	for _, metric := range batch.Metrics {
-		// Pour les histogrammes, on crée plusieurs points
-		if metric.Type == types.Histogram {
-			// Point pour la valeur
-			points = append(points, MetricPoint{
-				Metric:    metric.Name + "_sum",
-				Value:     metric.Value,
-				Timestamp: metric.Timestamp.Unix(),
-				Labels:    metric.LabelValues,
-			})
+		// Format: name{label1="value1",label2="value2"} value timestamp
+		builder.WriteString(metric.Name)
 
-			// Points pour les buckets
-			for _, bucket := range metric.Buckets {
-				bucketLabels := copyLabels(metric.LabelValues)
-				bucketLabels["le"] = fmt.Sprintf("%g", bucket)
-				points = append(points, MetricPoint{
-					Metric:    metric.Name + "_bucket",
-					Value:     metric.Value,
-					Timestamp: metric.Timestamp.Unix(),
-					Labels:    bucketLabels,
-				})
-			}
-
-			// Point pour le count
-			points = append(points, MetricPoint{
-				Metric:    metric.Name + "_count",
-				Value:     1, // Incrémenter le compteur
-				Timestamp: metric.Timestamp.Unix(),
-				Labels:    metric.LabelValues,
-			})
-		} else {
-			// Pour les gauges et counters, on crée un seul point
-			points = append(points, MetricPoint{
-				Metric:    metric.Name,
-				Value:     metric.Value,
-				Timestamp: metric.Timestamp.Unix(),
-				Labels:    metric.LabelValues,
-			})
-		}
-	}
-
-	return json.Marshal(points)
-}
-
-// copyLabels creates a copy of a label map
-func copyLabels(labels map[string]string) map[string]string {
-	newLabels := make(map[string]string, len(labels))
-	for k, v := range labels {
-		newLabels[k] = v
-	}
-	return newLabels
-}
-
-// Ajouter les méthodes manquantes
-func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
-	// Implémentation similaire à l'ancienne version
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	batch := types.MetricBatch{
-		Metrics: make([]types.Metric, 0),
-		Time:    time.Now(),
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if len(batch.Metrics) > 0 {
-				c.SendMetrics(batch)
-				batch = types.MetricBatch{
-					Metrics: make([]types.Metric, 0),
-					Time:    time.Now(),
+		if len(metric.LabelValues) > 0 {
+			builder.WriteString("{")
+			first := true
+			for k, v := range metric.LabelValues {
+				if !first {
+					builder.WriteString(",")
 				}
+				builder.WriteString(k)
+				builder.WriteString("=\"")
+				// Échapper les guillemets dans les valeurs
+				escapedValue := strings.ReplaceAll(v, "\"", "\\\"")
+				builder.WriteString(escapedValue)
+				builder.WriteString("\"")
+				first = false
 			}
+			builder.WriteString("}")
+		}
+
+		builder.WriteString(" ")
+		builder.WriteString(fmt.Sprintf("%g", metric.Value))
+		builder.WriteString(" ")
+		builder.WriteString(fmt.Sprintf("%d", metric.Timestamp.UnixNano()/1000000)) // Millisecondes
+		builder.WriteString("\n")
+	}
+
+	return []byte(builder.String()), nil
+}
+
+// SendMetricsImmediate envoie immédiatement des métriques sans passer par le buffer
+func (c *MetricsClient) SendMetricsImmediate(batch types.MetricBatch) error {
+	// Log le format des métriques pour le débogage
+	c.logMetricFormat(batch)
+
+	// Validation des métriques
+	for i := range batch.Metrics {
+		if err := validateMetric(&batch.Metrics[i], &c.config.Metrics); err != nil {
+			return c.handleError(err, ErrCodeValidation, false)
 		}
 	}
+
+	// Envoi direct à VictoriaMetrics
+	utils.LogInfo("Sending metrics immediately (bypassing buffer)")
+	return c.sendToVictoriaMetrics(batch)
 }
 
 // SendLogs envoie les logs à VictoriaMetrics
@@ -457,21 +427,30 @@ func (c *MetricsClient) SendLogs(logs []models.LogEntry) error {
 }
 
 func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
-	// Log metrics being sent
-	utils.LogInfo("Sending %d metrics to VictoriaMetrics", len(batch.Metrics))
-	for i, metric := range batch.Metrics {
-		if i < 5 { // Log only first 5 metrics to avoid flooding logs
-			utils.LogInfo("  Metric: %s, Value: %f, Labels: %v",
-				metric.Name, metric.Value, metric.LabelValues)
-		}
-	}
+	// Log simplifié des métriques envoyées
+	utils.LogInfo("Envoi de %d métriques à VictoriaMetrics", len(batch.Metrics))
 
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Victoria.RequestTimeout)
 	defer cancel()
 
-	data, err := formatMetrics(batch)
+	// Utiliser le format texte Prometheus
+	data, err := c.formatMetricsPrometheus(batch)
 	if err != nil {
 		return fmt.Errorf("error formatting metrics: %w", err)
+	}
+
+	// Ne pas logger le payload complet en production
+	if os.Getenv("DEBUG_METRICS") == "true" {
+		// Limiter à quelques lignes pour éviter de polluer les logs
+		lines := strings.Split(string(data), "\n")
+		sampleSize := 3
+		if len(lines) > sampleSize {
+			utils.LogInfo("Échantillon du payload (%d/%d lignes):\n%s",
+				sampleSize, len(lines),
+				strings.Join(lines[:sampleSize], "\n"))
+		} else {
+			utils.LogInfo("Payload complet:\n%s", string(data))
+		}
 	}
 
 	var body io.Reader = bytes.NewBuffer(data)
@@ -487,7 +466,7 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 		body = &buf
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/api/v1/import", body)
+	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/api/v1/import/prometheus", body)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
@@ -499,20 +478,24 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 	if c.config.Victoria.Compression {
 		req.Header.Set("Content-Encoding", "gzip")
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "text/plain")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
+		utils.LogError("Échec de la requête HTTP: %v", err)
 		return fmt.Errorf("error sending metrics: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// En cas d'erreur uniquement, lire et logger la réponse
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		utils.LogError("Statut de réponse inattendu: %d, corps: %s", resp.StatusCode, string(respBody))
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	// After successful send
-	utils.LogInfo("Successfully sent %d metrics to VictoriaMetrics", len(batch.Metrics))
+	// Log simplifié en cas de succès
+	utils.LogInfo("Métriques envoyées avec succès")
 	return nil
 }
 
@@ -666,4 +649,103 @@ func (c *LogsClientImpl) SendLogs(logs []types.Log) error {
 // GetErrorCount returns the number of errors of a specific type
 func (c *MetricsClient) GetErrorCount(errorCode string) int {
 	return c.errorRegistry.GetErrorCount(errorCode)
+}
+
+// Ajoutez cette fonction pour déboguer le format des métriques
+func (c *MetricsClient) logMetricFormat(batch types.MetricBatch) {
+	// Ne logger le format que si le mode debug est activé
+	if os.Getenv("DEBUG_METRICS") != "true" {
+		return
+	}
+
+	var builder strings.Builder
+
+	// Limiter à quelques métriques pour éviter de polluer les logs
+	maxSamples := 3
+	sampleCount := min(maxSamples, len(batch.Metrics))
+
+	builder.WriteString(fmt.Sprintf("Échantillon de format (%d/%d métriques):\n", sampleCount, len(batch.Metrics)))
+
+	for i := 0; i < sampleCount; i++ {
+		metric := batch.Metrics[i]
+		// Format: name{label1="value1",label2="value2"} value timestamp
+		builder.WriteString(metric.Name)
+
+		if len(metric.LabelValues) > 0 {
+			builder.WriteString("{")
+			first := true
+			for k, v := range metric.LabelValues {
+				if !first {
+					builder.WriteString(",")
+				}
+				builder.WriteString(k)
+				builder.WriteString("=\"")
+				builder.WriteString(v)
+				builder.WriteString("\"")
+				first = false
+			}
+			builder.WriteString("}")
+		}
+
+		builder.WriteString(" ")
+		builder.WriteString(fmt.Sprintf("%f", metric.Value))
+		builder.WriteString(" ")
+		builder.WriteString(fmt.Sprintf("%d", metric.Timestamp.Unix()*1000))
+		builder.WriteString("\n")
+	}
+
+	utils.LogInfo("%s", builder.String())
+}
+
+// Helper function for min
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// StartMetricBuffer démarre le traitement des métriques en arrière-plan
+func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
+	utils.LogInfo("Démarrage du buffer de métriques")
+	ticker := time.NewTicker(c.config.Metrics.FlushInterval)
+	defer ticker.Stop()
+
+	batch := types.MetricBatch{
+		Metrics: make([]types.Metric, 0, c.batchSize),
+		Time:    time.Now(),
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			utils.LogInfo("Arrêt du buffer de métriques")
+			// Flush final des métriques restantes
+			if len(batch.Metrics) > 0 {
+				c.sendToVictoriaMetrics(batch)
+			}
+			return
+		case newBatch := <-c.buffer:
+			// Ajouter les métriques au lot courant
+			batch.Metrics = append(batch.Metrics, newBatch.Metrics...)
+
+			// Si le lot atteint la taille maximale, l'envoyer immédiatement
+			if len(batch.Metrics) >= c.batchSize {
+				c.sendToVictoriaMetrics(batch)
+				batch = types.MetricBatch{
+					Metrics: make([]types.Metric, 0, c.batchSize),
+					Time:    time.Now(),
+				}
+			}
+		case <-ticker.C:
+			// Envoyer le lot actuel s'il contient des métriques
+			if len(batch.Metrics) > 0 {
+				c.sendToVictoriaMetrics(batch)
+				batch = types.MetricBatch{
+					Metrics: make([]types.Metric, 0, c.batchSize),
+					Time:    time.Now(),
+				}
+			}
+		}
+	}
 }

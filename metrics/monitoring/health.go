@@ -473,18 +473,24 @@ func MonitorDetailedMetrics(ctx context.Context, vmClient *victoria.MetricsClien
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
+	utils.LogInfo("Démarrage du monitoring détaillé des métriques (intervalle: 10s)")
+
 	for {
 		select {
 		case <-ctx.Done():
+			utils.LogInfo("Arrêt du monitoring détaillé des métriques")
 			return
 		case <-ticker.C:
 			// Collecter et envoyer les métriques détaillées
 			batch := collectMetrics(state)
+
+			// Log simplifié avant envoi
+			utils.LogInfo("Envoi de %d métriques détaillées", len(batch.Metrics))
+
 			if err := vmClient.SendMetrics(batch); err != nil {
-				utils.LogError("Failed to send detailed metrics: %v", err)
-			} else {
-				utils.LogInfo("Successfully sent %d detailed metrics to VictoriaMetrics", len(batch.Metrics))
+				utils.LogError("Échec de l'envoi des métriques détaillées: %v", err)
 			}
+			// Pas de log en cas de succès pour réduire le bruit
 		}
 	}
 }

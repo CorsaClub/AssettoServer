@@ -223,6 +223,32 @@ func main() {
 	utils.LogInfo("Testing VictoriaMetrics connection")
 	testVictoriaMetricsConnection(metricsClient, serverID)
 
+	// Dans la fonction main, après l'initialisation du client
+	utils.LogInfo("Testing direct metric send to VictoriaMetrics")
+	testMetric := types.MetricBatch{
+		Metrics: []types.Metric{
+			{
+				Name:      "assetto_server_test_direct",
+				Value:     float64(time.Now().Unix()),
+				Type:      types.Gauge,
+				Timestamp: time.Now(),
+				LabelValues: map[string]string{
+					"server_id": serverState.ServerID,
+					"test":      "direct_send",
+					"timestamp": time.Now().Format(time.RFC3339),
+				},
+			},
+		},
+		Time: time.Now(),
+	}
+
+	// Envoi direct sans passer par le buffer
+	if err := metricsClient.SendMetricsImmediate(testMetric); err != nil {
+		utils.LogError("Direct metric send failed: %v", err)
+	} else {
+		utils.LogInfo("Direct metric send successful")
+	}
+
 	// At the end of main()
 	utils.LogInfo("Main function completed, container should continue running")
 
@@ -631,6 +657,13 @@ func initVictoriaMetrics() *victoria.MetricsClient {
 	utils.LogInfo("Initializing VictoriaMetrics client with URL: %s", cfg.Victoria.URL)
 	utils.LogInfo("VictoriaMetrics Username: %s", cfg.Victoria.Username)
 	utils.LogInfo("VictoriaMetrics Password: %s", strings.Repeat("*", len(cfg.Victoria.Password)))
+	utils.LogInfo("VictoriaMetrics configuration:")
+	utils.LogInfo("  URL: %s", cfg.Victoria.URL)
+	utils.LogInfo("  Username: %s", cfg.Victoria.Username)
+	utils.LogInfo("  BatchSize: %d", cfg.Metrics.BatchSize)
+	utils.LogInfo("  FlushInterval: %v", cfg.Metrics.FlushInterval)
+	utils.LogInfo("  BufferSize: %d", cfg.Metrics.BufferSize)
+	utils.LogInfo("  Compression: %v", cfg.Metrics.Compression)
 
 	return victoria.NewClient(cfg)
 }
