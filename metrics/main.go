@@ -118,6 +118,7 @@ func main() {
 	// Initialiser les deux clients
 	metricsClient := initVictoriaMetrics()
 	logsClient := initVictoriaLogs()
+	testVictoriaLogsConnection(logsClient)
 
 	// Ajouter un canal pour les événements
 	eventChan := make(chan string, 100)
@@ -781,5 +782,29 @@ func testVictoriaMetricsConnection(client *victoria.MetricsClient, serverID stri
 		utils.LogError("Failed to send test metric: %v", err)
 	} else {
 		utils.LogInfo("Successfully sent test metric to VictoriaMetrics")
+	}
+}
+
+// Fonction pour tester la connexion à VictoriaLogs
+func testVictoriaLogsConnection(client victoria.LogsClient) {
+	testLog := []types.Log{
+		{
+			Timestamp: time.Now(),
+			Level:     "INFO",
+			Message:   "Test log message from Assetto Corsa server wrapper",
+			Source:    "acserver",
+			Labels: map[string]string{
+				"test":      "true",
+				"server_id": utils.GenerateServerID(),
+				"timestamp": time.Now().Format(time.RFC3339),
+			},
+		},
+	}
+
+	utils.LogInfo("Sending test log to VictoriaLogs")
+	if err := client.SendLogs(testLog); err != nil {
+		utils.LogError("Failed to send test log to VictoriaLogs: %v", err)
+	} else {
+		utils.LogInfo("Successfully sent test log to VictoriaLogs")
 	}
 }

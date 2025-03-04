@@ -7,7 +7,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -23,17 +22,6 @@ import (
 	"metrics/types"
 	"metrics/utils"
 )
-
-// Renommer LogsClientImpl en LogsClient (le type concret)
-type LogsClientImpl struct {
-	config     *config.VictoriaLogsConfig
-	httpClient *http.Client
-}
-
-// Renommer l'interface en LogsClient (au lieu de LogsClientInterface)
-type LogsClient interface {
-	SendLogs(logs []types.Log) error
-}
 
 // Client existant renommé pour plus de clarté
 type MetricsClient struct {
@@ -556,75 +544,72 @@ func (c *MetricsClient) Buffer() chan types.MetricBatch {
 	return c.buffer
 }
 
-// Mettre à jour la signature
-func NewLogsClient(cfg *config.VictoriaLogsConfig) LogsClient {
-	return &LogsClientImpl{
-		config: cfg,
-		httpClient: &http.Client{
-			Timeout: cfg.RequestTimeout,
-		},
-	}
-}
-
 func (c *LogsClientImpl) SendLogs(logs []types.Log) error {
 	if len(logs) == 0 {
 		return nil
 	}
 
-	// Convert logs to JSON lines format
-	var lines []string
-	for _, log := range logs {
-		// Create log entry with all fields
-		logData := map[string]interface{}{
-			"timestamp": log.Timestamp.UnixNano(),
-			"level":     log.Level,
-			"message":   log.Message,
-			"source":    log.Source,
-		}
-
-		// Add labels if present
-		if len(log.Labels) > 0 {
-			logData["labels"] = log.Labels
-		}
-
-		// Convert to JSON
-		jsonData, err := json.Marshal(logData)
-		if err != nil {
-			continue
-		}
-		lines = append(lines, string(jsonData))
-	}
-
-	// Prepare request data
-	data := url.Values{}
-	data.Set("format", "jsonl")
-	data.Set("data", strings.Join(lines, "\n"))
-
-	// Create request
-	req, err := http.NewRequest("POST", c.config.URL+"/api/v1/logs/insert", strings.NewReader(data.Encode()))
+	// Convertir les logs en format JSON
+	jsonLogs, err := c.formatLogsJSON(logs)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %v", err)
+		return fmt.Errorf("error formatting logs: %w", err)
 	}
 
-	// Set headers
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Créer la requête HTTP
+	req, err := http.NewRequest("POST", c.config.URL+"/api/v1/write", bytes.NewBuffer(jsonLogs))
+	if err != nil {
+		return fmt.Errorf("error creating request: %w", err)
+	}
+
+	// Ajouter les en-têtes
+	req.Header.Set("Content-Type", "application/json")
+
+	// Ajouter l'authentification si nécessaire
 	if c.config.Username != "" && c.config.Password != "" {
 		req.SetBasicAuth(c.config.Username, c.config.Password)
 	}
 
-	// Send request
+	// Envoyer la requête
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send logs: %v", err)
+		utils.LogError("Failed to send logs to VictoriaLogs: %v", err)
+		return fmt.Errorf("error sending logs: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check response
+	// Vérifier la réponse
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code when sending logs: %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		utils.LogError("VictoriaLogs returned non-OK status: %d, body: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
+	utils.LogDebug("Successfully sent %d logs to VictoriaLogs", len(logs))
 	return nil
+}
+
+// Fonction pour formater les logs en JSON
+func (c *LogsClientImpl) formatLogsJSON(logs []types.Log) ([]byte, error) {
+	type jsonLog struct {
+		Timestamp string            `json:"timestamp"`
+		Level     string            `json:"level"`
+		Message   string            `json:"message"`
+		Source    string            `json:"source"`
+		Labels    map[string]string `json:"labels,omitempty"`
+	}
+
+	jsonLogs := make([]jsonLog, len(logs))
+	for i, log := range logs {
+		jsonLogs[i] = jsonLog{
+			Timestamp: log.Timestamp.Format(time.RFC3339),
+			Level:     log.Level,
+			Message:   log.Message,
+			Source:    log.Source,
+			Labels:    log.Labels,
+		}
+	}
+
+	return json.Marshal(jsonLogs)
 }
 
 // GetErrorCount returns the number of errors of a specific type

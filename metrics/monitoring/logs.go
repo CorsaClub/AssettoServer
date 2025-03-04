@@ -310,13 +310,21 @@ func (lm *LogMonitor) processBatch(logs []models.LogEntry) {
 		if _, seen := lm.seenLogs[log.Message]; !seen {
 			lm.seenLogs[log.Message] = time.Now()
 
-			victoriaLogs = append(victoriaLogs, types.Log{
+			// Créer un log au format attendu par VictoriaLogs
+			victoriaLog := types.Log{
 				Timestamp: log.Timestamp,
 				Level:     log.Level,
 				Message:   log.Message,
-				Source:    "acserver",
-				Labels:    log.Labels,
-			})
+				Source:    log.Labels["log_file"],
+				Labels:    make(map[string]string),
+			}
+
+			// Copier tous les labels
+			for k, v := range log.Labels {
+				victoriaLog.Labels[k] = v
+			}
+
+			victoriaLogs = append(victoriaLogs, victoriaLog)
 		}
 	}
 
@@ -324,6 +332,8 @@ func (lm *LogMonitor) processBatch(logs []models.LogEntry) {
 	if len(victoriaLogs) > 0 {
 		if err := lm.logsClient.SendLogs(victoriaLogs); err != nil {
 			utils.LogError("Failed to send logs to VictoriaLogs: %v", err)
+		} else {
+			utils.LogInfo("Successfully sent %d logs to VictoriaLogs", len(victoriaLogs))
 		}
 	}
 }
