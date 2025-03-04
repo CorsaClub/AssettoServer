@@ -16,6 +16,30 @@ import (
 	"metrics/victoria"
 )
 
+// LogMonitorOption est une fonction qui configure un LogMonitor
+type LogMonitorOption func(*LogMonitor)
+
+// WithPatterns définit les patterns de fichiers à surveiller
+func WithPatterns(patterns []string) LogMonitorOption {
+	return func(lm *LogMonitor) {
+		lm.logPatterns = patterns
+	}
+}
+
+// WithMaxFileSize définit la taille maximale des fichiers à surveiller
+func WithMaxFileSize(maxSize int64) LogMonitorOption {
+	return func(lm *LogMonitor) {
+		lm.maxFileSize = maxSize
+	}
+}
+
+// WithLineCallback définit une fonction de rappel pour chaque ligne lue
+func WithLineCallback(callback func(string)) LogMonitorOption {
+	return func(lm *LogMonitor) {
+		lm.lineCallback = callback
+	}
+}
+
 // LogMonitor surveille les fichiers de log du serveur
 type LogMonitor struct {
 	metricsClient  *victoria.MetricsClient
@@ -30,23 +54,11 @@ type LogMonitor struct {
 	chatEnabled    bool
 	incidentTypes  map[string]*regexp.Regexp
 	configPatterns map[string]*regexp.Regexp
+	maxFileSize    int64
+	lineCallback   func(string)
 }
 
-// Add these option functions
-type LogMonitorOption func(*LogMonitor)
-
-func WithPatterns(patterns []string) LogMonitorOption {
-	return func(lm *LogMonitor) {
-		lm.logPatterns = patterns
-	}
-}
-
-func WithMaxFileSize(size int64) LogMonitorOption {
-	return func(lm *LogMonitor) {
-		// Implementation for max file size
-	}
-}
-
+// NewLogMonitor crée un nouveau moniteur de logs
 func NewLogMonitor(
 	metricsClient *victoria.MetricsClient,
 	logsClient victoria.LogsClient,
@@ -73,6 +85,7 @@ func NewLogMonitor(
 		chatEnabled:    false,
 		incidentTypes:  make(map[string]*regexp.Regexp),
 		configPatterns: make(map[string]*regexp.Regexp),
+		maxFileSize:    100 * 1024 * 1024, // 100MB par défaut
 	}
 
 	for _, opt := range opts {
@@ -100,6 +113,7 @@ func initLogFilters() map[string]*regexp.Regexp {
 	return filters
 }
 
+// Start démarre la surveillance des logs
 func (lm *LogMonitor) Start(ctx context.Context) {
 	// Créer le répertoire de logs s'il n'existe pas
 	if err := os.MkdirAll(lm.logDir, 0755); err != nil {

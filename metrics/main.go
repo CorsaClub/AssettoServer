@@ -119,6 +119,18 @@ func main() {
 	metricsClient := initVictoriaMetrics()
 	logsClient := initVictoriaLogs()
 
+	// Ajouter un canal pour les événements
+	eventChan := make(chan string, 100)
+
+	// Ajouter cette fonction pour capturer les événements du serveur
+	captureServerEvents := func(line string) {
+		// Filtrer les lignes pertinentes
+		if strings.Contains(line, "Collision between") ||
+			strings.Contains(line, "CHAT:") {
+			eventChan <- line
+		}
+	}
+
 	// Démarrer le monitoring avec les deux clients
 	logMonitor := monitoring.NewLogMonitor(
 		metricsClient,
@@ -126,6 +138,7 @@ func main() {
 		serverConfig.Logging.Directory,
 		monitoring.WithPatterns(serverConfig.Logging.Patterns),
 		monitoring.WithMaxFileSize(serverConfig.Logging.MaxFileSize),
+		monitoring.WithLineCallback(captureServerEvents),
 	)
 
 	// Démarrer les goroutines avec gestion appropriée
@@ -152,6 +165,9 @@ func main() {
 
 	// Démarrer le monitoring des performances internes
 	go metrics.StartPerformanceMonitoring(ctx, metricsClient)
+
+	// Démarrer le monitoring des événements
+	go monitoring.MonitorServerEvents(ctx, metricsClient, logsClient, serverState, eventChan)
 
 	// Initialiser la configuration d'authentification
 	authConfig := config.NewAuthConfig()
@@ -735,8 +751,6 @@ func monitorProcessExit(cmd *exec.Cmd) {
 				utils.LogWarning("Process %d no longer exists: %v", cmd.Process.Pid, err)
 				return
 			}
-
-			utils.LogInfo("Process %d is still running", cmd.Process.Pid)
 		}
 	}()
 }

@@ -281,6 +281,28 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 					"session_type": state.CurrentSession.Type,
 				},
 			},
+			{
+				Name:      "assetto_server_session_type",
+				Value:     1, // Valeur constante, l'information est dans le label
+				Type:      types.Gauge,
+				Timestamp: time.Now(),
+				LabelValues: map[string]string{
+					"server_id":    state.ServerID,
+					"session_id":   state.CurrentSession.ID,
+					"session_type": state.CurrentSession.Type,
+				},
+			},
+			{
+				Name:      "assetto_server_connected_players",
+				Value:     float64(len(state.ConnectedPlayers)),
+				Type:      types.Gauge,
+				Timestamp: time.Now(),
+				LabelValues: map[string]string{
+					"server_id":    state.ServerID,
+					"session_id":   state.CurrentSession.ID,
+					"session_type": state.CurrentSession.Type,
+				},
+			},
 		},
 		Time: time.Now(),
 	}

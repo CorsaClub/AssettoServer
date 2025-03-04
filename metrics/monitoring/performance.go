@@ -177,6 +177,28 @@ func (pm *PerformanceMonitor) processMetrics(ctx context.Context) {
 							"session_type": pm.state.CurrentSession.Type,
 						},
 					},
+					{
+						Name:      "assetto_server_goroutines",
+						Value:     float64(runtime.NumGoroutine()),
+						Type:      metrics.Gauge,
+						Timestamp: time.Now(),
+						LabelValues: map[string]string{
+							"server_id":   pm.state.ServerID,
+							"server_name": pm.state.ServerName,
+							"server_type": pm.state.ServerType,
+						},
+					},
+					{
+						Name:      "assetto_server_uptime",
+						Value:     float64(time.Since(pm.state.StartTime).Seconds()),
+						Type:      metrics.Gauge,
+						Timestamp: time.Now(),
+						LabelValues: map[string]string{
+							"server_id":   pm.state.ServerID,
+							"server_name": pm.state.ServerName,
+							"server_type": pm.state.ServerType,
+						},
+					},
 				},
 				Time: time.Now(),
 			})
