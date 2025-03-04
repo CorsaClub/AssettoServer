@@ -29,6 +29,10 @@ if [ ! -f /home/acserver/.steam/sdk64/steamclient.so ]; then
         echo "Found Steam client library in fallback location, copying..."
         cp /app/AssettoServer/steamclient.so /home/acserver/.steam/sdk64/
         chmod 755 /home/acserver/.steam/sdk64/steamclient.so
+        mkdir -p /home/acserver/.steam/sdk32
+        ln -sf /home/acserver/.steam/sdk64/steamclient.so /home/acserver/.steam/sdk32/steamclient.so
+        ln -sf /home/acserver/.steam/sdk64/steamclient.so /app/steamclient.so
+        ln -sf /home/acserver/.steam/sdk64/steamclient.so ./steamclient.so
         echo "Steam client library installed successfully."
     else
         echo "ERROR: Steam client library not found in any location!"
@@ -38,7 +42,15 @@ if [ ! -f /home/acserver/.steam/sdk64/steamclient.so ]; then
     fi
 else
     echo "Steam client library found in primary location."
+    mkdir -p /home/acserver/.steam/sdk32
+    ln -sf /home/acserver/.steam/sdk64/steamclient.so /home/acserver/.steam/sdk32/steamclient.so
+    ln -sf /home/acserver/.steam/sdk64/steamclient.so /app/steamclient.so
+    ln -sf /home/acserver/.steam/sdk64/steamclient.so ./steamclient.so
 fi
+
+# Définir la variable d'environnement LD_LIBRARY_PATH pour aider à trouver steamclient.so
+export LD_LIBRARY_PATH="/home/acserver/.steam/sdk64:/home/acserver/.steam/sdk32:/app:/app/AssettoServer:$LD_LIBRARY_PATH"
+echo "LD_LIBRARY_PATH set to: $LD_LIBRARY_PATH"
 
 # Change to server directory with better error handling
 echo "Changing to server directory..."
@@ -86,6 +98,28 @@ echo "Configuration files verified."
 echo "==============================================="
 echo "Starting Assetto Corsa Server"
 echo "==============================================="
+
+# Vérifier que steamclient.so est accessible via LD_LIBRARY_PATH
+echo "Vérification de l'accessibilité de steamclient.so..."
+found=0
+for path in $(echo $LD_LIBRARY_PATH | tr ':' ' '); do
+    if [ -f "$path/steamclient.so" ]; then
+        echo "steamclient.so trouvé dans $path"
+        found=1
+        break
+    fi
+done
+
+if [ $found -eq 0 ]; then
+    echo "AVERTISSEMENT: steamclient.so n'a pas été trouvé dans LD_LIBRARY_PATH!"
+    echo "Tentative de création d'un lien symbolique dans le répertoire courant..."
+    if [ -f /home/acserver/.steam/sdk64/steamclient.so ]; then
+        ln -sf /home/acserver/.steam/sdk64/steamclient.so ./steamclient.so
+        echo "Lien symbolique créé."
+    else
+        echo "ERREUR: Impossible de trouver steamclient.so pour créer un lien!"
+    fi
+fi
 
 # Execute the server with exec to replace the current process
 exec ./AssettoServer --plugins-from-workdir

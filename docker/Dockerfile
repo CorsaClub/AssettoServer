@@ -82,6 +82,9 @@ RUN mkdir -p /shared-config && \
 # Add steamclient.so fallback location
 RUN mkdir -p /app/AssettoServer/ && \
     cp /home/acserver/.steam/sdk64/steamclient.so /app/AssettoServer/ && \
+    mkdir -p /home/acserver/.steam/sdk32 && \
+    ln -sf /home/acserver/.steam/sdk64/steamclient.so /home/acserver/.steam/sdk32/steamclient.so && \
+    ln -sf /home/acserver/.steam/sdk64/steamclient.so /app/steamclient.so && \
     chmod +x /app/AssettoServer/steamclient.so && \
     chmod +x /app/AssettoServer/AssettoServer
 

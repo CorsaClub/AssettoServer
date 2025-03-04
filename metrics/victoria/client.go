@@ -427,8 +427,6 @@ func (c *MetricsClient) SendLogs(logs []models.LogEntry) error {
 }
 
 func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
-	// Pas de log initial - nous loggons uniquement le résultat final
-
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Victoria.RequestTimeout)
 	defer cancel()
 
@@ -466,20 +464,19 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		utils.LogError("Échec de l'envoi de %d métriques: %v", len(batch.Metrics), err)
+		utils.LogError("Échec de l'envoi de métriques: %v", err)
 		return fmt.Errorf("error sending metrics: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
-		utils.LogError("Échec de l'envoi de %d métriques (code %d): %s",
-			len(batch.Metrics), resp.StatusCode, string(respBody))
+		utils.LogError("Échec de l'envoi de métriques (code %d): %s",
+			resp.StatusCode, string(respBody))
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	// Un seul log concis en cas de succès
-	utils.LogInfo("Envoi réussi de %d métriques", len(batch.Metrics))
+	// Aucun log en cas de succès
 	return nil
 }
 
@@ -691,7 +688,7 @@ func min(a, b int) int {
 
 // StartMetricBuffer démarre le traitement des métriques en arrière-plan
 func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
-	utils.LogInfo("Démarrage du buffer de métriques")
+	utils.LogInfo("Système de métriques prêt (OK)")
 	ticker := time.NewTicker(c.config.Metrics.FlushInterval)
 	defer ticker.Stop()
 
@@ -703,8 +700,7 @@ func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			utils.LogInfo("Arrêt du buffer de métriques")
-			// Flush final des métriques restantes
+			// Flush final des métriques restantes sans log
 			if len(batch.Metrics) > 0 {
 				c.sendToVictoriaMetrics(batch)
 			}
