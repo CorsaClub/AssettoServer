@@ -55,15 +55,21 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 	// Préparer les données au format ndjson (une ligne JSON par log)
 	var buffer bytes.Buffer
 	for _, log := range logs {
+		// Récupérer le server_id des labels ou utiliser une valeur par défaut
+		serverID := "unknown"
+		if id, ok := log.Labels["server_id"]; ok {
+			serverID = id
+		}
+
 		// Convertir le log en format compatible avec VictoriaLogs
-		// Structure conforme à l'exemple fourni
+		// Structure conforme à l'exemple fourni avec server_id dans le stream
 		logEntry := map[string]interface{}{
 			"date": log.Timestamp.Format(time.RFC3339Nano),
 			"log": map[string]interface{}{
 				"level":   log.Level,
 				"message": log.Message,
 			},
-			"stream": log.Source,
+			"stream": fmt.Sprintf("%s-%s", log.Source, serverID),
 		}
 
 		// Ajouter les labels comme champs supplémentaires
@@ -150,19 +156,23 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 
 // LogEvent envoie un événement de log à VictoriaLogs
 func (c LogsClient) LogEvent(level string, message string, eventType string, labels map[string]string) error {
+	// S'assurer que server_id est présent
+	serverID := "unknown"
+	if id, ok := labels["server_id"]; ok {
+		serverID = id
+	}
+
 	log := types.Log{
 		Timestamp: time.Now(),
 		Level:     level,
 		Message:   message,
 		Source:    "acserver",
-		Labels: map[string]string{
-			"event_type": eventType,
-		},
+		Labels:    labels,
 	}
 
-	// Ajouter les labels supplémentaires
-	for k, v := range labels {
-		log.Labels[k] = v
+	// Ajouter server_id s'il n'est pas déjà présent
+	if _, ok := log.Labels["server_id"]; !ok {
+		log.Labels["server_id"] = serverID
 	}
 
 	return c.SendLogs([]types.Log{log})
