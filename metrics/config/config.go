@@ -26,6 +26,8 @@ type VictoriaLogsConfig struct {
 	ConnectTimeout time.Duration `json:"connect_timeout"`
 	MaxRetries     int           `json:"max_retries"`
 	RetryBackoff   time.Duration `json:"retry_backoff"`
+	Timeout        time.Duration `json:"timeout"`
+	Compression    bool          `json:"compression"`
 }
 
 type MetricsConfig struct {
@@ -73,6 +75,7 @@ const (
 	DefaultMaxUniqueMetrics    = 1000
 	DefaultMaxLabelValueLength = 100
 	DefaultMaxMetricNameLength = 200
+	DefaultTimeout             = 10 * time.Second
 )
 
 // NewDefaultConfig returns a Config with sensible defaults
@@ -97,6 +100,8 @@ func NewDefaultConfig() *Config {
 			RetryBackoff:   DefaultRetryBackoff,
 			Username:       DefaultUsername,
 			Password:       DefaultPassword,
+			Timeout:        DefaultTimeout,
+			Compression:    DefaultCompression,
 		},
 		Metrics: MetricsConfig{
 			BatchSize:           DefaultBatchSize,

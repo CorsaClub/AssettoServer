@@ -4,8 +4,11 @@ package victoria
 
 import (
 	"bytes"
+	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -14,45 +17,49 @@ import (
 	"metrics/utils"
 )
 
-// LogsClient interface pour l'envoi de logs
-type LogsClient interface {
-	SendLogs(logs []types.Log) error
-}
-
-// VictoriaLogsClient implémente l'interface LogsClient pour VictoriaLogs
-type VictoriaLogsClient struct {
-	config     *config.VictoriaLogsConfig
-	httpClient *http.Client
+// LogsClient est le client pour envoyer des logs à VictoriaLogs
+type LogsClient struct {
+	URL         string
+	Username    string
+	Password    string
+	client      *http.Client
+	config      config.VictoriaLogsConfig
+	Compression bool
+	Timeout     time.Duration
 }
 
 // NewLogsClient crée un nouveau client VictoriaLogs
-func NewLogsClient(config *config.VictoriaLogsConfig) LogsClient {
-	return &VictoriaLogsClient{
-		config: config,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+func NewLogsClient(cfg *config.VictoriaLogsConfig) LogsClient {
+	client := &http.Client{
+		Timeout: cfg.Timeout,
+	}
+
+	return LogsClient{
+		URL:         cfg.URL,
+		Username:    cfg.Username,
+		Password:    cfg.Password,
+		client:      client,
+		config:      *cfg,
+		Compression: cfg.Compression,
+		Timeout:     cfg.Timeout,
 	}
 }
 
-// SendLogs envoie des logs à VictoriaLogs en utilisant le format JSON Stream
-func (c *VictoriaLogsClient) SendLogs(logs []types.Log) error {
+// SendLogs envoie des logs à VictoriaLogs
+func (c LogsClient) SendLogs(logs []types.Log) error {
 	if len(logs) == 0 {
 		return nil
 	}
 
-	// Construire l'URL avec les paramètres requis
-	url := fmt.Sprintf("%s/insert/jsonline?_time_field=timestamp&_msg_field=message&_stream_fields=source", c.config.URL)
-
-	// Préparer les données au format JSON Stream (ndjson)
+	// Préparer les données au format ndjson (une ligne JSON par log)
 	var buffer bytes.Buffer
 	for _, log := range logs {
 		// Convertir le log en format compatible avec VictoriaLogs
 		logEntry := map[string]interface{}{
-			"timestamp": log.Timestamp.Format(time.RFC3339Nano),
-			"message":   log.Message,
-			"level":     log.Level,
-			"source":    log.Source,
+			"Timestamp": log.Timestamp.Format(time.RFC3339Nano),
+			"Message":   log.Message,
+			"Level":     log.Level,
+			"Source":    log.Source,
 		}
 
 		// Ajouter les labels comme champs supplémentaires
@@ -62,37 +69,85 @@ func (c *VictoriaLogsClient) SendLogs(logs []types.Log) error {
 
 		// Encoder en JSON et ajouter au buffer
 		if err := json.NewEncoder(&buffer).Encode(logEntry); err != nil {
-			utils.LogError("Failed to encode log entry: %v", err)
+			utils.LogError("Erreur lors de la sérialisation du log: %v", err)
 			continue
 		}
 	}
 
-	// Créer la requête
-	req, err := http.NewRequest("POST", url, &buffer)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	// Compresser les données si nécessaire
+	var body io.Reader = &buffer
+	if c.Compression {
+		var compressedBuf bytes.Buffer
+		gz := gzip.NewWriter(&compressedBuf)
+		if _, err := io.Copy(gz, &buffer); err != nil {
+			return fmt.Errorf("erreur de compression: %w", err)
+		}
+		if err := gz.Close(); err != nil {
+			return fmt.Errorf("erreur de fermeture du compresseur: %w", err)
+		}
+		body = &compressedBuf
 	}
 
-	// Définir les headers
-	req.Header.Set("Content-Type", "application/stream+json")
+	// Créer la requête avec les paramètres appropriés
+	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
+	defer cancel()
 
-	// Ajouter les credentials si nécessaire
-	if c.config.Username != "" && c.config.Password != "" {
-		req.SetBasicAuth(c.config.Username, c.config.Password)
+	// Construire l'URL avec les paramètres requis
+	url := fmt.Sprintf("%s/insert/jsonline?_msg_field=Message&_time_field=Timestamp&_stream_fields=Source", c.URL)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, body)
+	if err != nil {
+		utils.LogError("Erreur lors de la création de la requête: %v", err)
+		return fmt.Errorf("erreur de création de requête: %w", err)
+	}
+
+	// Ajouter l'authentification si nécessaire
+	if c.Username != "" && c.Password != "" {
+		req.SetBasicAuth(c.Username, c.Password)
+	}
+
+	// Définir les en-têtes
+	req.Header.Set("Content-Type", "application/stream+json")
+	if c.Compression {
+		req.Header.Set("Content-Encoding", "gzip")
 	}
 
 	// Envoyer la requête
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send logs: %w", err)
+		utils.LogError("Erreur lors de l'envoi des logs: %v", err)
+		return fmt.Errorf("erreur d'envoi: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// Vérifier la réponse
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("failed to send logs, status code: %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		utils.LogError("Échec de l'envoi des logs (code %d): %s",
+			resp.StatusCode, string(respBody))
+		return fmt.Errorf("code de statut inattendu: %d - %s", resp.StatusCode, string(respBody))
 	}
 
-	utils.LogInfo("Successfully sent %d logs to VictoriaLogs", len(logs))
+	utils.LogInfo("Logs envoyés avec succès à VictoriaLogs (%d entrées)", len(logs))
 	return nil
+}
+
+// LogEvent envoie un événement de log à VictoriaLogs
+func (c LogsClient) LogEvent(level string, message string, eventType string, labels map[string]string) error {
+	log := types.Log{
+		Timestamp: time.Now(),
+		Level:     level,
+		Message:   message,
+		Source:    "acserver",
+		Labels: map[string]string{
+			"event_type": eventType,
+		},
+	}
+
+	// Ajouter les labels supplémentaires
+	for k, v := range labels {
+		log.Labels[k] = v
+	}
+
+	return c.SendLogs([]types.Log{log})
 }

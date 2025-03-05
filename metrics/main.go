@@ -638,6 +638,12 @@ func initVictoriaLogs() victoria.LogsClient {
 		cfg.VictoriaLogs.Password = pass
 	}
 
+	// Afficher les informations de configuration pour le débogage
+	utils.LogInfo("Configuration VictoriaLogs:")
+	utils.LogInfo("  URL: %s", cfg.VictoriaLogs.URL)
+	utils.LogInfo("  Username: %s", cfg.VictoriaLogs.Username != "")
+	utils.LogInfo("  Password: %s", cfg.VictoriaLogs.Password != "")
+
 	return victoria.NewLogsClient(&cfg.VictoriaLogs)
 }
 
@@ -720,6 +726,8 @@ func testVictoriaMetricsConnection(client *victoria.MetricsClient, serverID stri
 
 // Fonction pour tester la connexion à VictoriaLogs
 func testVictoriaLogsConnection(client victoria.LogsClient) {
+	utils.LogInfo("Test de connexion à VictoriaLogs")
+
 	testLog := []types.Log{
 		{
 			Timestamp: time.Now(),
@@ -734,10 +742,10 @@ func testVictoriaLogsConnection(client victoria.LogsClient) {
 		},
 	}
 
-	utils.LogInfo("Sending test log to VictoriaLogs")
+	utils.LogInfo("Envoi d'un log de test à VictoriaLogs")
 	if err := client.SendLogs(testLog); err != nil {
-		utils.LogError("Failed to send test log to VictoriaLogs: %v", err)
+		utils.LogError("Échec de l'envoi du log de test à VictoriaLogs: %v", err)
 	} else {
-		utils.LogInfo("Successfully sent test log to VictoriaLogs")
+		utils.LogInfo("Log de test envoyé avec succès à VictoriaLogs")
 	}
 }

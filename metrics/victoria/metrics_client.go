@@ -407,10 +407,11 @@ func (c *MetricsClient) SendMetricsImmediate(batch types.MetricBatch) error {
 	return c.sendToVictoriaMetrics(batch)
 }
 
-// SendLogs envoie les logs à VictoriaMetrics
+// SendLogs envoie les logs à VictoriaMetrics - cette méthode ne devrait pas être utilisée
+// car elle est destinée au client de logs, pas au client de métriques
 func (c *MetricsClient) SendLogs(logs []models.LogEntry) error {
-	// Implémentation de l'envoi des logs
-	return nil
+	utils.LogWarning("SendLogs appelé sur MetricsClient au lieu de LogsClient - les logs ne seront pas envoyés")
+	return fmt.Errorf("méthode non implémentée pour MetricsClient, utilisez LogsClient à la place")
 }
 
 func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
