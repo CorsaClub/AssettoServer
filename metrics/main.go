@@ -48,6 +48,7 @@ func (i *interceptor) Write(p []byte) (n int, err error) {
 // and manages the server's lifecycle including health checks and metrics.
 func main() {
 	// At the beginning of main()
+	os.Setenv("DEBUG_LOGS", "true")
 	utils.LogInfo("Starting wrapper with TEST_MODE=%s", os.Getenv("TEST_MODE"))
 
 	// Create a WaitGroup to track goroutines
@@ -128,6 +129,18 @@ func main() {
 		if strings.Contains(line, "Collision between") ||
 			strings.Contains(line, "CHAT:") {
 			eventChan <- line
+
+			// Ajouter un envoi direct à VictoriaLogs pour les messages de chat
+			if strings.Contains(line, "CHAT:") {
+				chatParts := strings.SplitN(line, "CHAT:", 2)
+				if len(chatParts) > 1 {
+					chatMessage := strings.TrimSpace(chatParts[1])
+					logsClient.LogEvent("INFO", chatMessage, "chat_message", map[string]string{
+						"server_id": serverState.ServerID,
+						"source":    "chat",
+					})
+				}
+			}
 		}
 	}
 
@@ -421,6 +434,12 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 		intercept: func(p []byte) {
 			str := strings.TrimSpace(string(p))
 			utils.LogError("Server stderr: %s", str)
+
+			// Envoyer directement à VictoriaLogs
+			logsClient.LogEvent("ERROR", str, "server_error", map[string]string{
+				"server_id":  state.ServerID,
+				"session_id": state.CurrentSession.ID,
+			})
 		},
 	}
 
@@ -443,6 +462,12 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 
 			// Send to WebSocket
 			wsServer.BroadcastLog(logEntry)
+
+			// Envoyer directement à VictoriaLogs
+			logsClient.LogEvent("INFO", str, "server_output", map[string]string{
+				"server_id":  state.ServerID,
+				"session_id": state.CurrentSession.ID,
+			})
 
 			// Process log normally
 			handlers.HandleServerOutput(str, vmClient, state, serverReady, nil)
