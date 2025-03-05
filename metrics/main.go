@@ -201,7 +201,7 @@ func main() {
 	} else {
 		scriptPath = *input
 	}
-	cmd := prepareServerCommand(ctx, &scriptPath, args, serverState, serverReady, metricsClient, wsServer)
+	cmd := prepareServerCommand(ctx, &scriptPath, args, serverState, serverReady, metricsClient, wsServer, logsClient)
 	if err := cmd.Start(); err != nil {
 		utils.LogError("Error Starting Cmd: %v", err)
 		os.Exit(1)
@@ -351,7 +351,7 @@ func main() {
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
 // It sets up output interception and command arguments.
-func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer) *exec.Cmd {
+func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer, logsClient victoria.LogsClient) *exec.Cmd {
 	utils.LogInfo("Preparing server command: %s", *input)
 
 	// Check if the script file exists and is executable
