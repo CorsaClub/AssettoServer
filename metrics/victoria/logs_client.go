@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"metrics/config"
@@ -55,16 +56,22 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 	var buffer bytes.Buffer
 	for _, log := range logs {
 		// Convertir le log en format compatible avec VictoriaLogs
+		// Structure conforme à l'exemple fourni
 		logEntry := map[string]interface{}{
-			"Timestamp": log.Timestamp.Format(time.RFC3339Nano),
-			"Message":   log.Message,
-			"Level":     log.Level,
-			"Source":    log.Source,
+			"date": log.Timestamp.Format(time.RFC3339Nano),
+			"log": map[string]interface{}{
+				"level":   log.Level,
+				"message": log.Message,
+			},
+			"stream": log.Source,
 		}
 
 		// Ajouter les labels comme champs supplémentaires
 		for k, v := range log.Labels {
-			logEntry[k] = v
+			// Éviter d'écraser les champs existants
+			if k != "log" && k != "date" && k != "stream" {
+				logEntry[k] = v
+			}
 		}
 
 		// Encoder en JSON et ajouter au buffer
@@ -92,8 +99,8 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
-	// Construire l'URL avec les paramètres requis
-	url := fmt.Sprintf("%s/insert/jsonline?_msg_field=Message&_time_field=Timestamp&_stream_fields=Source", c.URL)
+	// Construire l'URL avec les paramètres requis conformes à l'exemple
+	url := fmt.Sprintf("%s/insert/jsonline?_msg_field=log.message&_time_field=date&_stream_fields=stream", c.URL)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, body)
 	if err != nil {
@@ -110,6 +117,15 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 	req.Header.Set("Content-Type", "application/stream+json")
 	if c.Compression {
 		req.Header.Set("Content-Encoding", "gzip")
+	}
+
+	// Ajouter un log de débogage pour voir les données envoyées
+	if os.Getenv("DEBUG_LOGS") == "true" {
+		sample := buffer.String()
+		if len(sample) > 500 {
+			sample = sample[:500] + "..." // Tronquer pour éviter des logs trop longs
+		}
+		utils.LogInfo("Échantillon de données JSONL envoyées: %s", sample)
 	}
 
 	// Envoyer la requête
