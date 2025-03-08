@@ -3,6 +3,7 @@ package monitoring
 import (
 	"context"
 	"runtime"
+	"sync"
 	"time"
 
 	metrics "metrics/services"
@@ -15,6 +16,12 @@ type PerformanceMonitor struct {
 	vmClient *metrics.VictoriaMetricsClient
 	// Channels for asynchronous collection
 	perfUpdates chan perfMetrics
+
+	// FPS calculation fields
+	frameTimes      []time.Duration
+	frameTimesMutex sync.Mutex
+	lastFrameTime   time.Time
+	maxFrameTimes   int
 }
 
 type perfMetrics struct {
@@ -25,13 +32,16 @@ type perfMetrics struct {
 // NewPerformanceMonitor creates a new PerformanceMonitor instance
 func NewPerformanceMonitor(state *types.ServerState, vmClient *metrics.VictoriaMetricsClient) *PerformanceMonitor {
 	return &PerformanceMonitor{
-		state:       state,
-		vmClient:    vmClient,
-		perfUpdates: make(chan perfMetrics, 100),
+		state:         state,
+		vmClient:      vmClient,
+		perfUpdates:   make(chan perfMetrics, 100),
+		frameTimes:    make([]time.Duration, 0, 100),
+		lastFrameTime: time.Now(),
+		maxFrameTimes: 100, // Keep track of the last 100 frames
 	}
 }
 
-// Start starts the performance monitor
+// Start begins monitoring performance metrics
 func (pm *PerformanceMonitor) Start(ctx context.Context) {
 	// High frequency collection (every 100ms)
 	go pm.collectHighFrequencyMetrics(ctx)
@@ -54,6 +64,9 @@ func (pm *PerformanceMonitor) collectHighFrequencyMetrics(ctx context.Context) {
 			return
 		case <-ticker.C:
 			start := time.Now()
+
+			// Record frame time
+			pm.recordFrameTime()
 
 			// Collect FPS and tick time metrics
 			metrics := perfMetrics{
@@ -86,25 +99,25 @@ func (pm *PerformanceMonitor) collectLowFrequencyMetrics(ctx context.Context) {
 			metricsData := metrics.MetricBatch{
 				Metrics: []metrics.Metric{
 					{
-						Name:      "assetto_server_memory_heap_bytes",
+						Name:      metrics.ServerMemoryUsage,
 						Value:     float64(memStats.HeapAlloc),
 						Type:      metrics.Gauge,
 						Timestamp: time.Now(),
 						LabelValues: map[string]string{
-							"server_id":    pm.state.ServerID,
-							"session_id":   pm.state.CurrentSession.ID,
-							"session_type": pm.state.CurrentSession.Type,
+							"server_id":   pm.state.ServerID,
+							"server_name": pm.state.ServerName,
+							"memory_type": "heap",
 						},
 					},
 					{
-						Name:      "assetto_server_memory_stack_bytes",
+						Name:      metrics.ServerMemoryUsage,
 						Value:     float64(memStats.StackInuse),
 						Type:      metrics.Gauge,
 						Timestamp: time.Now(),
 						LabelValues: map[string]string{
-							"server_id":    pm.state.ServerID,
-							"session_id":   pm.state.CurrentSession.ID,
-							"session_type": pm.state.CurrentSession.Type,
+							"server_id":   pm.state.ServerID,
+							"server_name": pm.state.ServerName,
+							"memory_type": "stack",
 						},
 					},
 				},
@@ -156,14 +169,14 @@ func (pm *PerformanceMonitor) processMetrics(ctx context.Context) {
 			pm.vmClient.SendMetrics(metrics.MetricBatch{
 				Metrics: []metrics.Metric{
 					{
-						Name:      "assetto_server_fps",
+						Name:      metrics.ServerFPS,
 						Value:     perfData.fps,
 						Type:      metrics.Gauge,
 						Timestamp: time.Now(),
 						LabelValues: map[string]string{
-							"server_id":    pm.state.ServerID,
-							"session_id":   pm.state.CurrentSession.ID,
-							"session_type": pm.state.CurrentSession.Type,
+							"server_id":   pm.state.ServerID,
+							"server_name": pm.state.ServerName,
+							"server_type": pm.state.ServerType,
 						},
 					},
 					{
@@ -178,7 +191,7 @@ func (pm *PerformanceMonitor) processMetrics(ctx context.Context) {
 						},
 					},
 					{
-						Name:      "assetto_server_goroutines",
+						Name:      metrics.DebugGoroutines,
 						Value:     float64(runtime.NumGoroutine()),
 						Type:      metrics.Gauge,
 						Timestamp: time.Now(),
@@ -189,7 +202,7 @@ func (pm *PerformanceMonitor) processMetrics(ctx context.Context) {
 						},
 					},
 					{
-						Name:      "assetto_server_uptime",
+						Name:      metrics.ServerUptime,
 						Value:     float64(time.Since(pm.state.StartTime).Seconds()),
 						Type:      metrics.Gauge,
 						Timestamp: time.Now(),
@@ -206,8 +219,55 @@ func (pm *PerformanceMonitor) processMetrics(ctx context.Context) {
 	}
 }
 
-// Calculates FPS
+// recordFrameTime records the time between frames
+func (pm *PerformanceMonitor) recordFrameTime() {
+	now := time.Now()
+	frameTime := now.Sub(pm.lastFrameTime)
+	pm.lastFrameTime = now
+
+	// Only record reasonable frame times (between 1ms and 1s)
+	if frameTime >= time.Millisecond && frameTime <= time.Second {
+		pm.frameTimesMutex.Lock()
+		defer pm.frameTimesMutex.Unlock()
+
+		// Add the new frame time
+		pm.frameTimes = append(pm.frameTimes, frameTime)
+
+		// Keep only the most recent frame times
+		if len(pm.frameTimes) > pm.maxFrameTimes {
+			pm.frameTimes = pm.frameTimes[len(pm.frameTimes)-pm.maxFrameTimes:]
+		}
+	}
+}
+
+// Calculates FPS based on the average frame time
 func (pm *PerformanceMonitor) calculateFPS() float64 {
-	// Implementation of FPS calculation based on server tick rate
-	return pm.state.TickRate
+	pm.frameTimesMutex.Lock()
+	defer pm.frameTimesMutex.Unlock()
+
+	// If we don't have enough frame times, fall back to tick rate
+	if len(pm.frameTimes) < 10 {
+		return pm.state.TickRate
+	}
+
+	// Calculate the average frame time
+	var totalTime time.Duration
+	for _, frameTime := range pm.frameTimes {
+		totalTime += frameTime
+	}
+
+	avgFrameTime := totalTime / time.Duration(len(pm.frameTimes))
+
+	// Convert to FPS (frames per second)
+	if avgFrameTime <= 0 {
+		return pm.state.TickRate // Fallback to tick rate if we have invalid data
+	}
+
+	fps := float64(time.Second) / float64(avgFrameTime)
+
+	// Apply some smoothing to avoid wild fluctuations
+	// Blend with the tick rate (80% new value, 20% tick rate)
+	smoothedFPS := (fps * 0.8) + (pm.state.TickRate * 0.2)
+
+	return smoothedFPS
 }

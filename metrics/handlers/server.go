@@ -49,11 +49,16 @@ func HandleServerOutput(output string, vmClient *victoria.MetricsClient, state *
 		return
 	}
 
-	// Common labels for all metrics
+	// Log all server output
+	logServerOutput(output, state)
+
+	// Create base labels for metrics
 	baseLabels := map[string]string{
-		"server_id":   state.ServerID,
-		"server_name": state.ServerName,
-		"server_type": state.ServerType,
+		"server_id":    state.ServerID,
+		"server_name":  state.ServerName,
+		"server_type":  state.ServerType,
+		"session_id":   state.CurrentSession.ID,
+		"session_type": state.CurrentSession.Type,
 	}
 
 	select {
@@ -361,7 +366,7 @@ func updatePlayerCount(state *types.ServerState, vmClient *victoria.MetricsClien
 	vmClient.SendMetrics(types.MetricBatch{
 		Metrics: []types.Metric{
 			{
-				Name:  "assetto_server_connected_players",
+				Name:  metrics.ServerPlayersConnected,
 				Value: float64(state.Players),
 				Type:  types.Gauge,
 				LabelValues: map[string]string{
@@ -376,10 +381,25 @@ func updatePlayerCount(state *types.ServerState, vmClient *victoria.MetricsClien
 }
 
 // logEvent logs an event with contextual information about the server state.
-func logEvent(eventType string, message string, state *types.ServerState) {
+func logEvent(eventType string, message string, state *types.ServerState, additionalLabels ...map[string]string) {
 	sessionType := "unknown"
 	if state.CurrentSession != nil {
 		sessionType = state.CurrentSession.Type
+	}
+
+	// Create base labels
+	labels := map[string]string{
+		"server_id":    state.ServerID,
+		"server_name":  state.ServerName,
+		"server_type":  state.ServerType,
+		"session_type": sessionType,
+	}
+
+	// Add additional labels if provided
+	if len(additionalLabels) > 0 {
+		for k, v := range additionalLabels[0] {
+			labels[k] = v
+		}
 	}
 
 	utils.LogSDK("[%s] %s | Server: %s | Players: %d | Session: %s",
@@ -388,6 +408,11 @@ func logEvent(eventType string, message string, state *types.ServerState) {
 		state.ServerName,
 		state.Players,
 		sessionType)
+
+	// Send to VictoriaLogs if available
+	if logsClient, ok := utils.GetLogsClient(); ok {
+		logsClient.LogEvent("INFO", message, eventType, labels)
+	}
 }
 
 // addPlayer adds a new player to the server's state and increments the player count.
@@ -704,8 +729,50 @@ func handleChatMessage(output string, state *types.ServerState, labels map[strin
 	messageContent := utils.ExtractChatMessage(output)
 	messageType := determineChatType(messageContent) // admin, global, team, etc.
 
+	// Try to extract the player's Steam ID
+	steamID := utils.ExtractSteamID(output)
+	if steamID == "" {
+		// If we can't extract the Steam ID from the output, try to find it in the state
+		state.RLock()
+		for id, player := range state.ConnectedPlayers {
+			if player.Name == playerName {
+				steamID = id
+				break
+			}
+		}
+		state.RUnlock()
+	}
+
+	// Get session information
+	sessionType := "unknown"
+	sessionID := ""
+	if state.CurrentSession != nil {
+		sessionType = state.CurrentSession.Type
+		sessionID = state.CurrentSession.ID
+	}
+
 	// Incrémenter le compteur général
 	metrics.ChatMessagesCounter.With(labels).Inc()
+
+	// Incrémenter le compteur par joueur
+	playerLabels := map[string]string{
+		"server_id":   labels["server_id"],
+		"server_name": labels["server_name"],
+		"server_type": labels["server_type"],
+		"player_name": playerName,
+		"player_id":   steamID,
+	}
+	metrics.ChatMessagesByPlayerCounter.With(playerLabels).Inc()
+
+	// Incrémenter le compteur par session
+	sessionLabels := map[string]string{
+		"server_id":    labels["server_id"],
+		"server_name":  labels["server_name"],
+		"server_type":  labels["server_type"],
+		"session_type": sessionType,
+		"session_id":   sessionID,
+	}
+	metrics.ChatMessagesBySessionCounter.With(sessionLabels).Inc()
 
 	// Incrémenter le compteur détaillé
 	metrics.ChatMessagesByTypeCounter.With(map[string]string{
@@ -714,6 +781,25 @@ func handleChatMessage(output string, state *types.ServerState, labels map[strin
 		"message_type": messageType,
 		"content":      messageContent,
 	}).Inc()
+
+	// Record message length in the histogram
+	lengthLabels := map[string]string{
+		"server_id":    labels["server_id"],
+		"server_name":  labels["server_name"],
+		"server_type":  labels["server_type"],
+		"player_name":  playerName,
+		"message_type": messageType,
+	}
+	metrics.ChatMessageLengthHistogram.With(lengthLabels).Observe(float64(len(messageContent)))
+
+	// Log the chat message with dedicated labels
+	logEvent("chat_message", messageContent, state, map[string]string{
+		"player_name":  playerName,
+		"message_type": messageType,
+		"player_id":    steamID,
+		"session_type": sessionType,
+		"session_id":   sessionID,
+	})
 }
 
 func handleCleanExit(output string, _ *types.ServerState, _ map[string]string) {
@@ -730,4 +816,59 @@ func determineChatType(message string) string {
 		return "team"
 	}
 	return "global"
+}
+
+// logServerOutput logs all server output with appropriate categorization
+func logServerOutput(output string, state *types.ServerState) {
+	// Determine the event type based on the output content
+	eventType := "server_output"
+	level := "INFO"
+
+	// Categorize the output
+	if strings.Contains(output, "ERROR") || strings.Contains(output, "Error") || strings.Contains(output, "error") {
+		eventType = "server_error"
+		level = "ERROR"
+	} else if strings.Contains(output, "WARNING") || strings.Contains(output, "Warning") || strings.Contains(output, "warning") {
+		eventType = "server_warning"
+		level = "WARNING"
+	} else if strings.Contains(output, "CHAT") {
+		eventType = "chat_message"
+	} else if strings.Contains(output, "CONNECTED") {
+		eventType = "player_connect"
+	} else if strings.Contains(output, "DISCONNECTED") {
+		eventType = "player_disconnect"
+	} else if strings.Contains(output, "SESSION") {
+		eventType = "session_change"
+	}
+
+	// Create labels based on the event type
+	labels := map[string]string{
+		"server_id":    state.ServerID,
+		"server_name":  state.ServerName,
+		"server_type":  state.ServerType,
+		"session_id":   state.CurrentSession.ID,
+		"session_type": state.CurrentSession.Type,
+		"event_type":   eventType,
+	}
+
+	// Add player information if available
+	if strings.Contains(output, "CHAT") || strings.Contains(output, "CONNECTED") || strings.Contains(output, "DISCONNECTED") {
+		playerName := utils.ExtractName(output)
+		if playerName != "" {
+			labels["player_name"] = playerName
+		}
+
+		steamID := utils.ExtractSteamID(output)
+		if steamID != "" {
+			labels["player_id"] = steamID
+		}
+	}
+
+	// Send to VictoriaLogs if available
+	if logsClient, ok := utils.GetLogsClient(); ok {
+		logsClient.LogEvent(level, output, eventType, labels)
+	}
+
+	// Also log to standard output for debugging
+	utils.LogInfo("[%s] %s", eventType, output)
 }

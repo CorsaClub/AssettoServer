@@ -34,11 +34,11 @@ func DoHealth(ctx context.Context, vmClient *victoria.MetricsClient, state *type
 			// Perform health check
 			if !isHealthy(state) {
 				utils.LogWarning("Health check failed")
-				// Envoyer la métrique d'échec
+				// Créer une métrique pour les échecs de ping
 				vmClient.SendMetrics(types.MetricBatch{
 					Metrics: []types.Metric{
 						{
-							Name:      "assetto_server_health_ping_failures_total",
+							Name:      metrics.ServerErrorsCounter.Name,
 							Value:     1,
 							Type:      types.Counter,
 							Timestamp: time.Now(),
@@ -46,7 +46,7 @@ func DoHealth(ctx context.Context, vmClient *victoria.MetricsClient, state *type
 								"server_id":    state.ServerID,
 								"session_id":   state.CurrentSession.ID,
 								"session_type": state.CurrentSession.Type,
-								"failure_type": "health_check",
+								"error_type":   "health_ping_failure",
 							},
 						},
 					},
@@ -68,7 +68,7 @@ func DoHealth(ctx context.Context, vmClient *victoria.MetricsClient, state *type
 			vmClient.SendMetrics(types.MetricBatch{
 				Metrics: []types.Metric{
 					{
-						Name:      "assetto_server_last_health_ping_seconds",
+						Name:      metrics.ServerUptime,
 						Value:     time.Since(state.LastPing).Seconds(),
 						Type:      types.Gauge,
 						Timestamp: time.Now(),
@@ -76,6 +76,7 @@ func DoHealth(ctx context.Context, vmClient *victoria.MetricsClient, state *type
 							"server_id":    state.ServerID,
 							"session_id":   state.CurrentSession.ID,
 							"session_type": state.CurrentSession.Type,
+							"metric_type":  "last_health_ping",
 						},
 					},
 				},
@@ -133,7 +134,7 @@ func MonitorHealthMetrics(ctx context.Context, vmClient *victoria.MetricsClient,
 			batch := types.MetricBatch{
 				Metrics: []types.Metric{
 					{
-						Name:        "assetto_server_health",
+						Name:        metrics.ServerHealth,
 						Value:       1,
 						Type:        types.Gauge,
 						Timestamp:   time.Now(),
@@ -147,15 +148,33 @@ func MonitorHealthMetrics(ctx context.Context, vmClient *victoria.MetricsClient,
 						LabelValues: labels,
 					},
 					{
-						Name:        "assetto_server_health_timestamp",
-						Value:       float64(time.Now().Unix()),
-						Type:        types.Gauge,
-						Timestamp:   time.Now(),
-						LabelValues: labels,
+						Name:      metrics.ServerUptime,
+						Value:     float64(time.Now().Unix()),
+						Type:      types.Gauge,
+						Timestamp: time.Now(),
+						LabelValues: map[string]string{
+							"server_id":    state.ServerID,
+							"session_id":   state.CurrentSession.ID,
+							"session_type": state.CurrentSession.Type,
+							"metric_type":  "health_timestamp",
+						},
 					},
 				},
 				Time: time.Now(),
 			}
+
+			// Ajouter les métriques de base
+			batch.Metrics = append(batch.Metrics, types.Metric{
+				Name:      metrics.ServerPlayersConnected,
+				Value:     float64(len(state.ConnectedPlayers)),
+				Type:      types.Gauge,
+				Timestamp: time.Now(),
+				LabelValues: map[string]string{
+					"server_id":    state.ServerID,
+					"session_id":   state.CurrentSession.ID,
+					"session_type": state.CurrentSession.Type,
+				},
+			})
 
 			// Pas de logs détaillés avant l'envoi
 			if err := vmClient.SendMetrics(batch); err != nil {
@@ -194,7 +213,7 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 				},
 			},
 			{
-				Name:      "assetto_server_track_grip",
+				Name:      metrics.TrackGrip,
 				Value:     state.TrackGrip,
 				Type:      types.Gauge,
 				Timestamp: time.Now(),
@@ -205,7 +224,7 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 				},
 			},
 			{
-				Name:      "assetto_server_track_temp",
+				Name:      metrics.TrackTemperature,
 				Value:     state.TrackTemp,
 				Type:      types.Gauge,
 				Timestamp: time.Now(),
@@ -227,8 +246,8 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 				},
 			},
 			{
-				Name:      "assetto_server_tick_rate",
-				Value:     state.TickRate,
+				Name:      metrics.ServerTickRate,
+				Value:     float64(state.TickRate),
 				Type:      types.Gauge,
 				Timestamp: time.Now(),
 				LabelValues: map[string]string{
@@ -260,7 +279,7 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 				},
 			},
 			{
-				Name:      "assetto_server_air_temp",
+				Name:      metrics.AirTemperature,
 				Value:     state.AirTemp,
 				Type:      types.Gauge,
 				Timestamp: time.Now(),
@@ -271,8 +290,8 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 				},
 			},
 			{
-				Name:      "assetto_server_session_duration",
-				Value:     time.Since(state.SessionStart).Seconds(),
+				Name:      metrics.SessionDuration,
+				Value:     float64(time.Since(state.CurrentSession.StartTime).Seconds()),
 				Type:      types.Gauge,
 				Timestamp: time.Now(),
 				LabelValues: map[string]string{
@@ -282,8 +301,8 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 				},
 			},
 			{
-				Name:      "assetto_server_session_type",
-				Value:     1, // Valeur constante, l'information est dans le label
+				Name:      metrics.ServerSessionType,
+				Value:     sessionTypeToValue(state.CurrentSession.Type),
 				Type:      types.Gauge,
 				Timestamp: time.Now(),
 				LabelValues: map[string]string{
@@ -293,7 +312,7 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 				},
 			},
 			{
-				Name:      "assetto_server_connected_players",
+				Name:      metrics.ServerPlayersConnected,
 				Value:     float64(len(state.ConnectedPlayers)),
 				Type:      types.Gauge,
 				Timestamp: time.Now(),
@@ -502,5 +521,19 @@ func MonitorDetailedMetrics(ctx context.Context, vmClient *victoria.MetricsClien
 				utils.LogError("Failed to send detailed metrics: %v", err)
 			}
 		}
+	}
+}
+
+// sessionTypeToValue converts a session type to a corresponding value
+func sessionTypeToValue(sessionType string) float64 {
+	switch sessionType {
+	case "practice":
+		return 1
+	case "qualifying":
+		return 2
+	case "race":
+		return 3
+	default:
+		return 0
 	}
 }

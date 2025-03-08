@@ -115,9 +115,17 @@ func main() {
 		},
 	}
 
-	// Initialiser les deux clients
+	// Initialize VictoriaMetrics client
 	metricsClient := initVictoriaMetrics()
+
+	// Initialize VictoriaLogs client
 	logsClient := initVictoriaLogs()
+
+	// Set the logs client in the utils package for global access
+	utils.SetLogsClient(logsClient)
+
+	// Test connections
+	testVictoriaMetricsConnection(metricsClient, serverState.ServerID)
 	testVictoriaLogsConnection(logsClient)
 
 	// Ajouter un canal pour les événements
@@ -351,7 +359,7 @@ func main() {
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
 // It sets up output interception and command arguments.
-func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, vmClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer, logsClient victoria.LogsClient) *exec.Cmd {
+func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, metricsClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer, logsClient victoria.LogsClient) *exec.Cmd {
 	utils.LogInfo("Preparing server command: %s", *input)
 
 	// Check if the script file exists and is executable
@@ -463,14 +471,8 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 			// Send to WebSocket
 			wsServer.BroadcastLog(logEntry)
 
-			// Envoyer directement à VictoriaLogs
-			logsClient.LogEvent("INFO", str, "server_output", map[string]string{
-				"server_id":  state.ServerID,
-				"session_id": state.CurrentSession.ID,
-			})
-
-			// Process log normally
-			handlers.HandleServerOutput(str, vmClient, state, serverReady, nil)
+			// Process the output through the handler
+			handlers.HandleServerOutput(str, metricsClient, state, serverReady, nil)
 		},
 	}
 

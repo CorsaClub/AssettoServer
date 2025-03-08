@@ -38,6 +38,11 @@ const (
 	SessionPlayers   = "assetto_server_session_players_total"
 	SessionLaps      = "assetto_server_session_laps_total"
 	SessionIncidents = "assetto_server_session_incidents_total"
+
+	// Track metrics
+	TrackGrip        = "assetto_server_track_grip"
+	TrackTemperature = "assetto_server_track_temperature"
+	AirTemperature   = "assetto_server_air_temperature"
 )
 
 // MetricType represents the type of metric
@@ -216,14 +221,14 @@ var (
 
 	// Network metrics
 	NetworkBytesReceivedCounter = NewMetric(
-		"assetto_server_network_bytes_received_total",
+		NetworkBytesReceived,
 		"Total number of bytes received",
 		Counter,
 		ServerLabels,
 	)
 
 	NetworkBytesSentCounter = NewMetric(
-		"assetto_server_network_bytes_sent_total",
+		NetworkBytesSent,
 		"Total number of bytes sent",
 		Counter,
 		ServerLabels,
@@ -263,7 +268,7 @@ var (
 
 	// CSP metrics
 	CSPVersionGauge = NewMetric(
-		"assetto_server_csp_version",
+		CSPVersion,
 		"CSP version of connected players",
 		Gauge,
 		append(ServerLabels, "player_name"),
@@ -277,9 +282,37 @@ var (
 		ServerLabels,
 	)
 
+	ChatMessagesByPlayerCounter = NewMetric(
+		"assetto_server_chat_messages_by_player_total",
+		"Total number of chat messages by player",
+		Counter,
+		append(ServerLabels, "player_name", "player_id"),
+	)
+
+	ChatMessagesByTypeCounter = NewMetric(
+		"assetto_server_chat_messages_by_type_total",
+		"Total number of chat messages by type",
+		Counter,
+		append(ServerLabels, "player_name", "message_type", "content"),
+	)
+
+	ChatMessagesBySessionCounter = NewMetric(
+		"assetto_server_chat_messages_by_session_total",
+		"Total number of chat messages by session type",
+		Counter,
+		append(ServerLabels, "session_type", "session_id"),
+	)
+
+	ChatMessageLengthHistogram = NewMetric(
+		"assetto_server_chat_message_length",
+		"Distribution of chat message lengths in characters",
+		Histogram,
+		append(ServerLabels, "player_name", "message_type"),
+	).WithBuckets([]float64{10, 20, 30, 50, 100, 200, 500})
+
 	// Session metrics
 	SessionDurationGauge = NewMetric(
-		"assetto_server_session_duration_seconds",
+		SessionDuration,
 		"Duration of the current session in seconds",
 		Gauge,
 		append(ServerLabels, "session_type"),
@@ -294,28 +327,28 @@ var (
 
 	// Track condition metrics
 	TrackGripGauge = NewMetric(
-		"assetto_server_track_grip",
+		TrackGrip,
 		"Current track grip level percentage",
 		Gauge,
 		ServerLabels,
 	)
 
 	TrackTemperatureGauge = NewMetric(
-		"assetto_server_track_temperature",
+		TrackTemperature,
 		"Current track temperature in Celsius",
 		Gauge,
 		ServerLabels,
 	)
 
 	AirTemperatureGauge = NewMetric(
-		"assetto_server_air_temperature",
+		AirTemperature,
 		"Current air temperature in Celsius",
 		Gauge,
 		ServerLabels,
 	)
 
 	TickRateGauge = NewMetric(
-		"assetto_server_tick_rate",
+		ServerTickRate,
 		"Current server tick rate",
 		Gauge,
 		ServerLabels,
@@ -323,7 +356,7 @@ var (
 
 	// Player metrics
 	PacketLossGauge = NewMetric(
-		"assetto_server_packet_loss",
+		NetworkPacketLoss,
 		"Current player packet loss percentage",
 		Gauge,
 		append(ServerLabels, "player_name", "steam_id"),
@@ -338,14 +371,14 @@ var (
 
 	// Resource usage metrics
 	CpuUsageGauge = NewMetric(
-		"assetto_server_cpu_usage",
+		ServerCPUUsage,
 		"Current CPU usage percentage",
 		Gauge,
 		ServerLabels,
 	)
 
 	MemoryUsageGauge = NewMetric(
-		"assetto_server_memory_usage_bytes",
+		ServerMemoryUsage,
 		"Current memory usage in bytes",
 		Gauge,
 		ServerLabels,
@@ -383,7 +416,7 @@ var (
 
 	// Métriques CSP
 	CSPFeaturesGauge = NewMetric(
-		"assetto_server_csp_features_enabled",
+		CSPFeatureEnabled,
 		"CSP features enabled per player",
 		Gauge,
 		append(ServerLabels, "player_name", "feature"),
@@ -395,14 +428,6 @@ var (
 		"Total number of session state changes",
 		Counter,
 		append(ServerLabels, "from_state", "to_state"),
-	)
-
-	// Métriques de chat
-	ChatMessagesByTypeCounter = NewMetric(
-		"assetto_server_chat_messages_by_type_total",
-		"Total number of chat messages by type",
-		Counter,
-		append(ServerLabels, "player_name", "message_type", "content"),
 	)
 
 	// Métriques de clean exit

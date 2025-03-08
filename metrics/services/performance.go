@@ -28,7 +28,7 @@ var (
 
 	// Network Performance
 	NetworkLatencyHistogram = NewMetric(
-		"assetto_server_network_latency_ms",
+		NetworkLatency,
 		"Network latency per player in milliseconds",
 		Histogram,
 		append(ServerLabels, "player_id"),
@@ -44,7 +44,7 @@ var (
 
 	// Resource Usage
 	CPUUsagePerThreadGauge = NewMetric(
-		"assetto_server_cpu_usage_per_thread",
+		ServerCPUUsage,
 		"CPU usage per thread percentage",
 		Gauge,
 		append(ServerLabels, "thread_id"),
