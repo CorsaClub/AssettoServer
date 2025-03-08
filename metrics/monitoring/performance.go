@@ -93,9 +93,18 @@ func (pm *PerformanceMonitor) collectLowFrequencyMetrics(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Collect memory stats
 			var memStats runtime.MemStats
 			runtime.ReadMemStats(&memStats)
 
+			// Get CPU usage
+			cpuUsage, err := getProcessCPUUsage()
+			if err != nil {
+				utils.LogWarning("Failed to get CPU usage: %v", err)
+				cpuUsage = 0
+			}
+
+			// Create metrics batch
 			metricsData := metrics.MetricBatch{
 				Metrics: []metrics.Metric{
 					{
@@ -106,6 +115,7 @@ func (pm *PerformanceMonitor) collectLowFrequencyMetrics(ctx context.Context) {
 						LabelValues: map[string]string{
 							"server_id":   pm.state.ServerID,
 							"server_name": pm.state.ServerName,
+							"server_type": pm.state.ServerType,
 							"memory_type": "heap",
 						},
 					},
@@ -117,35 +127,75 @@ func (pm *PerformanceMonitor) collectLowFrequencyMetrics(ctx context.Context) {
 						LabelValues: map[string]string{
 							"server_id":   pm.state.ServerID,
 							"server_name": pm.state.ServerName,
+							"server_type": pm.state.ServerType,
 							"memory_type": "stack",
+						},
+					},
+					{
+						Name:      metrics.ServerCPUUsage,
+						Value:     cpuUsage,
+						Type:      metrics.Gauge,
+						Timestamp: time.Now(),
+						LabelValues: map[string]string{
+							"server_id":   pm.state.ServerID,
+							"server_name": pm.state.ServerName,
+							"server_type": pm.state.ServerType,
+						},
+					},
+					{
+						Name:      metrics.DebugGoroutines,
+						Value:     float64(runtime.NumGoroutine()),
+						Type:      metrics.Gauge,
+						Timestamp: time.Now(),
+						LabelValues: map[string]string{
+							"server_id":   pm.state.ServerID,
+							"server_name": pm.state.ServerName,
+							"server_type": pm.state.ServerType,
+						},
+					},
+					{
+						Name:      metrics.ServerUptime,
+						Value:     float64(time.Since(pm.state.StartTime).Seconds()),
+						Type:      metrics.Gauge,
+						Timestamp: time.Now(),
+						LabelValues: map[string]string{
+							"server_id":   pm.state.ServerID,
+							"server_name": pm.state.ServerName,
+							"server_type": pm.state.ServerType,
 						},
 					},
 				},
 				Time: time.Now(),
 			}
 
+			// Add player metrics if available
 			pm.state.RLock()
 			for _, player := range pm.state.ConnectedPlayers {
+				// Add player latency metric
 				metricsData.Metrics = append(metricsData.Metrics, metrics.Metric{
-					Name:      "assetto_server_player_latency_ms",
+					Name:      metrics.NetworkLatency,
 					Value:     float64(player.Latency),
 					Type:      metrics.Gauge,
 					Timestamp: time.Now(),
 					LabelValues: map[string]string{
 						"server_id":   pm.state.ServerID,
-						"session_id":  pm.state.CurrentSession.ID,
+						"server_name": pm.state.ServerName,
+						"server_type": pm.state.ServerType,
 						"player_id":   player.SteamID,
 						"player_name": player.Name,
 					},
 				})
+
+				// Add player packet loss metric
 				metricsData.Metrics = append(metricsData.Metrics, metrics.Metric{
-					Name:      "assetto_server_player_packet_loss",
+					Name:      metrics.NetworkPacketLoss,
 					Value:     player.PacketLoss,
 					Type:      metrics.Gauge,
 					Timestamp: time.Now(),
 					LabelValues: map[string]string{
 						"server_id":   pm.state.ServerID,
-						"session_id":  pm.state.CurrentSession.ID,
+						"server_name": pm.state.ServerName,
+						"server_type": pm.state.ServerType,
 						"player_id":   player.SteamID,
 						"player_name": player.Name,
 					},
@@ -180,7 +230,7 @@ func (pm *PerformanceMonitor) processMetrics(ctx context.Context) {
 						},
 					},
 					{
-						Name:      "assetto_server_tick_time_ms",
+						Name:      metrics.ServerTickRate,
 						Value:     perfData.tickTime,
 						Type:      metrics.Gauge,
 						Timestamp: time.Now(),
@@ -188,28 +238,6 @@ func (pm *PerformanceMonitor) processMetrics(ctx context.Context) {
 							"server_id":    pm.state.ServerID,
 							"session_id":   pm.state.CurrentSession.ID,
 							"session_type": pm.state.CurrentSession.Type,
-						},
-					},
-					{
-						Name:      metrics.DebugGoroutines,
-						Value:     float64(runtime.NumGoroutine()),
-						Type:      metrics.Gauge,
-						Timestamp: time.Now(),
-						LabelValues: map[string]string{
-							"server_id":   pm.state.ServerID,
-							"server_name": pm.state.ServerName,
-							"server_type": pm.state.ServerType,
-						},
-					},
-					{
-						Name:      metrics.ServerUptime,
-						Value:     float64(time.Since(pm.state.StartTime).Seconds()),
-						Type:      metrics.Gauge,
-						Timestamp: time.Now(),
-						LabelValues: map[string]string{
-							"server_id":   pm.state.ServerID,
-							"server_name": pm.state.ServerName,
-							"server_type": pm.state.ServerType,
 						},
 					},
 				},

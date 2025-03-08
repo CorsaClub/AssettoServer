@@ -537,3 +537,66 @@ func sessionTypeToValue(sessionType string) float64 {
 		return 0
 	}
 }
+
+// MonitorSessionMetrics surveille les métriques liées à la session en cours
+func MonitorSessionMetrics(ctx context.Context, vmClient *victoria.MetricsClient, state *types.ServerState) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			state.RLock()
+			if state.CurrentSession == nil || !state.Ready {
+				state.RUnlock()
+				continue
+			}
+
+			// Créer les labels de base
+			sessionLabels := map[string]string{
+				"server_id":    state.ServerID,
+				"server_name":  state.ServerName,
+				"server_type":  state.ServerType,
+				"session_id":   state.CurrentSession.ID,
+				"session_type": state.CurrentSession.Type,
+			}
+
+			// Calculer la durée de la session
+			sessionDuration := time.Since(state.CurrentSession.StartTime).Seconds()
+
+			// Créer le lot de métriques
+			batch := types.MetricBatch{
+				Metrics: []types.Metric{
+					{
+						Name:        metrics.SessionDuration,
+						Value:       sessionDuration,
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: sessionLabels,
+					},
+				},
+				Time: time.Now(),
+			}
+
+			// Ajouter le temps restant si disponible
+			if state.SessionTimeLeft > 0 {
+				batch.Metrics = append(batch.Metrics, types.Metric{
+					Name:        metrics.SessionRemainingTimeGauge.Name,
+					Value:       float64(state.SessionTimeLeft),
+					Type:        types.Gauge,
+					Timestamp:   time.Now(),
+					LabelValues: sessionLabels,
+				})
+			}
+
+			state.RUnlock()
+
+			// Envoyer les métriques
+			if err := vmClient.SendMetrics(batch); err != nil {
+				utils.LogError("Échec de l'envoi des métriques de session: %v", err)
+			}
+		}
+	}
+}

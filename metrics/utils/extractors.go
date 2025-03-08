@@ -4,6 +4,7 @@ package utils
 import (
 	"crypto/sha256"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -100,6 +101,36 @@ func ExtractBytesSent(output string) int64 {
 	return extractBytes(output, "Sent:")
 }
 
+// ExtractPacketLoss extracts the packet loss percentage from server output.
+func ExtractPacketLoss(output string) float64 {
+	if strings.Contains(output, "packet loss") {
+		re := regexp.MustCompile(`(\d+\.?\d*)%\s+packet loss`)
+		matches := re.FindStringSubmatch(output)
+		if len(matches) > 1 {
+			loss, err := strconv.ParseFloat(matches[1], 64)
+			if err == nil {
+				return loss / 100.0 // Convert percentage to ratio
+			}
+		}
+	}
+	return 0
+}
+
+// ExtractLatency extracts the network latency in milliseconds from server output.
+func ExtractLatency(output string) float64 {
+	if strings.Contains(output, "latency") || strings.Contains(output, "ping") {
+		re := regexp.MustCompile(`(\d+\.?\d*)\s*ms`)
+		matches := re.FindStringSubmatch(output)
+		if len(matches) > 1 {
+			latency, err := strconv.ParseFloat(matches[1], 64)
+			if err == nil {
+				return latency
+			}
+		}
+	}
+	return 0
+}
+
 // extractBytes is a utility function to extract byte values based on a prefix.
 func extractBytes(output, prefix string) int64 {
 	if strings.Contains(output, prefix) {
@@ -164,7 +195,28 @@ func ExtractAISlots(output string) map[string]int {
 func ExtractChatMessage(output string) string {
 	// Extraire le message après "CHAT:"
 	if idx := strings.Index(output, "CHAT:"); idx != -1 {
-		return strings.TrimSpace(output[idx+5:])
+		// Get the raw message
+		rawMessage := strings.TrimSpace(output[idx+5:])
+
+		// Remove any server-specific prefixes or formatting
+		// For example, remove timestamps, server tags, etc.
+		// This is a basic implementation, you might need to adjust based on your server's output format
+
+		// Remove player name if it appears at the beginning of the message
+		if nameEnd := strings.Index(rawMessage, ":"); nameEnd != -1 {
+			rawMessage = strings.TrimSpace(rawMessage[nameEnd+1:])
+		}
+
+		// Clean up any control characters or excessive whitespace
+		rawMessage = strings.TrimSpace(rawMessage)
+
+		// Limit message length to prevent excessive data
+		const maxLength = 500
+		if len(rawMessage) > maxLength {
+			rawMessage = rawMessage[:maxLength] + "..."
+		}
+
+		return rawMessage
 	}
 	return ""
 }

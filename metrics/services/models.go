@@ -18,10 +18,14 @@ const (
 	ServerHealth           = "assetto_server_health"
 
 	// Network metrics
-	NetworkBytesReceived = "assetto_server_network_bytes_received_total"
-	NetworkBytesSent     = "assetto_server_network_bytes_sent_total"
-	NetworkLatency       = "assetto_server_network_latency_ms"
-	NetworkPacketLoss    = "assetto_server_network_packet_loss_ratio"
+	NetworkBytesReceived   = "assetto_server_network_bytes_received_total"
+	NetworkBytesSent       = "assetto_server_network_bytes_sent_total"
+	NetworkLatency         = "assetto_server_network_latency_ms"
+	NetworkPacketLoss      = "assetto_server_network_packet_loss_ratio"
+	NetworkPacketsReceived = "assetto_server_network_packets_received_total"
+	NetworkPacketsSent     = "assetto_server_network_packets_sent_total"
+	NetworkErrors          = "assetto_server_network_errors_total"
+	NetworkDrops           = "assetto_server_network_drops_total"
 
 	// CSP metrics
 	CSPVersion        = "assetto_server_csp_version"
@@ -32,6 +36,19 @@ const (
 	ServerTickRate    = "assetto_server_tick_rate"
 	ServerMemoryUsage = "assetto_server_memory_bytes"
 	ServerCPUUsage    = "assetto_server_cpu_usage"
+
+	// Detailed system metrics
+	SystemCPUUsage       = "assetto_system_cpu_usage"
+	SystemMemoryTotal    = "assetto_system_memory_total_bytes"
+	SystemMemoryUsed     = "assetto_system_memory_used_bytes"
+	SystemMemoryFree     = "assetto_system_memory_free_bytes"
+	SystemMemorySwap     = "assetto_system_memory_swap_bytes"
+	SystemDiskUsage      = "assetto_system_disk_usage_bytes"
+	SystemDiskFree       = "assetto_system_disk_free_bytes"
+	SystemNetworkTraffic = "assetto_system_network_traffic_bytes"
+	SystemGoMemoryAlloc  = "assetto_go_memory_alloc_bytes"
+	SystemGoMemorySys    = "assetto_go_memory_sys_bytes"
+	SystemGoRoutines     = "assetto_go_routines"
 
 	// Session metrics
 	SessionDuration  = "assetto_server_session_duration_seconds"
@@ -323,6 +340,27 @@ var (
 		"Time remaining in the current session in seconds",
 		Gauge,
 		ServerLabels,
+	)
+
+	SessionIncidentsCounter = NewMetric(
+		SessionIncidents,
+		"Total number of incidents in the session",
+		Counter,
+		append(ServerLabels, "session_id", "session_type"),
+	)
+
+	SessionLapsCounter = NewMetric(
+		SessionLaps,
+		"Total number of laps in the session",
+		Counter,
+		append(ServerLabels, "session_id", "session_type"),
+	)
+
+	SessionPlayersCounter = NewMetric(
+		SessionPlayers,
+		"Total number of players in the session",
+		Counter,
+		append(ServerLabels, "session_id", "session_type"),
 	)
 
 	// Track condition metrics

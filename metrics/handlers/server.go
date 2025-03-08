@@ -4,6 +4,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -171,6 +172,10 @@ func HandleServerOutput(output string, vmClient *victoria.MetricsClient, state *
 			handleChatMessage(output, state, baseLabels)
 		case strings.Contains(output, "Received clean exit"):
 			handleCleanExit(output, state, baseLabels)
+		case strings.Contains(output, "Collision between") && strings.Contains(output, "and"):
+			handleCollision(output, state, baseLabels)
+		case strings.Contains(output, "LAP"):
+			handleLap(output, state, baseLabels)
 		default:
 			utils.LogWarning("Unhandled output: %s", output)
 		}
@@ -274,14 +279,41 @@ func handlePlayerConnect(state *types.ServerState, vmClient *victoria.MetricsCli
 		"server_type": labels["server_type"],
 		"player_name": player.Name,     // Use clean player name
 		"steam_id":    player.SteamID,  // Use clean Steam ID
-		"car_name":    player.CarModel, // Use clean car model
+		"car_model":   player.CarModel, // Use clean car model
 	}
 
 	// Update player-specific metrics with complete set of labels
 	metrics.PlayerLatencyGauge.With(playerLabels).Set(float64(player.Latency))
-	metrics.CarUsageCounter.With(playerLabels).Inc()
+
+	// Update car usage metrics
+	carLabels := map[string]string{
+		"server_id":   labels["server_id"],
+		"server_name": labels["server_name"],
+		"server_type": labels["server_type"],
+		"car_name":    player.CarModel,
+	}
+	metrics.CarUsageCounter.With(carLabels).Inc()
+
+	// Increment session players counter if in a session
+	if state.CurrentSession != nil {
+		sessionLabels := map[string]string{
+			"server_id":    labels["server_id"],
+			"server_name":  labels["server_name"],
+			"server_type":  labels["server_type"],
+			"session_id":   state.CurrentSession.ID,
+			"session_type": state.CurrentSession.Type,
+		}
+		metrics.SessionPlayersCounter.With(sessionLabels).Inc()
+	}
 
 	updatePlayerCount(state, vmClient)
+
+	// Log the player connection event
+	logEvent("player_connect", fmt.Sprintf("Player %s connected with car %s", player.Name, player.CarModel), state, map[string]string{
+		"player_name": player.Name,
+		"player_id":   player.SteamID,
+		"car_model":   player.CarModel,
+	})
 }
 
 // handlePlayerDisconnect processes a player's disconnection and updates relevant metrics.
@@ -298,30 +330,84 @@ func handlePlayerDisconnect(state *types.ServerState, vmClient *victoria.Metrics
 
 // handleSessionChange manages changes to the game session, such as switching tracks or session types.
 func handleSessionChange(state *types.ServerState, output string, labels map[string]string) {
-	logEvent("SESSION_CHANGE", "Session change detected", state)
 	sessionType := utils.ExtractSessionType(output)
-	track := utils.ExtractTrackName(output)
-
-	if sessionType == "" || track == "" {
-		utils.LogWarning("Invalid session info from output: %s", output)
+	if sessionType == "" {
 		return
 	}
 
-	state.Lock()
-	oldSession := state.CurrentSession
-	state.Unlock()
-
-	StartNewSession(state, sessionType, track)
-
-	if oldSession != nil {
-		sessionDuration := time.Since(oldSession.StartTime)
-		metrics.SessionDurationHistogram.With(labels).Observe(sessionDuration.Seconds())
+	oldSessionType := "unknown"
+	if state.CurrentSession != nil {
+		oldSessionType = state.CurrentSession.Type
 	}
 
+	// Update session state
+	state.Lock()
+	state.SessionType = sessionType
+	if state.CurrentSession == nil {
+		state.CurrentSession = &types.Session{
+			Type:      sessionType,
+			StartTime: time.Now(),
+			ID:        fmt.Sprintf("session_%d", time.Now().Unix()),
+		}
+	} else {
+		state.CurrentSession.Type = sessionType
+	}
+	state.Unlock()
+
+	// Increment session change counter
 	metrics.SessionChangeCounter.With(labels).Inc()
-	trackLabels := copyLabels(labels)
-	trackLabels["track_name"] = track
-	metrics.TrackUsageCounter.With(trackLabels).Inc()
+
+	// Increment session state changes counter
+	metrics.SessionStateChangesCounter.With(map[string]string{
+		"server_id":   labels["server_id"],
+		"server_name": labels["server_name"],
+		"server_type": labels["server_type"],
+		"from_state":  oldSessionType,
+		"to_state":    sessionType,
+	}).Inc()
+
+	// Increment session switch counter
+	metrics.SessionSwitchCounter.With(map[string]string{
+		"server_id":   labels["server_id"],
+		"server_name": labels["server_name"],
+		"server_type": labels["server_type"],
+		"from_type":   oldSessionType,
+		"to_type":     sessionType,
+		"track":       state.CurrentTrack,
+		"config":      state.CurrentLayout,
+	}).Inc()
+
+	// Update track usage counter
+	if state.CurrentTrack != "" {
+		metrics.TrackUsageCounter.With(map[string]string{
+			"server_id":   labels["server_id"],
+			"server_name": labels["server_name"],
+			"server_type": labels["server_type"],
+			"track_name":  state.CurrentTrack,
+		}).Inc()
+	}
+
+	// Reset session players counter
+	sessionLabels := map[string]string{
+		"server_id":    labels["server_id"],
+		"server_name":  labels["server_name"],
+		"server_type":  labels["server_type"],
+		"session_id":   state.CurrentSession.ID,
+		"session_type": sessionType,
+	}
+
+	// Set initial session players count
+	state.RLock()
+	metrics.SessionPlayersCounter.With(sessionLabels).Add(float64(len(state.ConnectedPlayers)))
+	state.RUnlock()
+
+	// Log the session change
+	logEvent("session_change", fmt.Sprintf("Session changed from %s to %s", oldSessionType, sessionType), state, map[string]string{
+		"from_type": oldSessionType,
+		"to_type":   sessionType,
+		"track":     state.CurrentTrack,
+		"config":    state.CurrentLayout,
+	})
 }
 
 // handleSteamAuth records successful Steam authentication events.
@@ -332,14 +418,43 @@ func handleSteamAuth(state *types.ServerState, labels map[string]string) {
 
 // handleNetworkStats updates network-related metrics based on the server output.
 func handleNetworkStats(output string, labels map[string]string) {
-	if bytesReceived := utils.ExtractBytesReceived(output); bytesReceived > 0 {
+	// Extract network statistics
+	bytesReceived := utils.ExtractBytesReceived(output)
+	bytesSent := utils.ExtractBytesSent(output)
+	packetLoss := utils.ExtractPacketLoss(output)
+	latency := utils.ExtractLatency(output)
+
+	// Update bytes received counter
+	if bytesReceived > 0 {
 		metrics.NetworkBytesReceivedCounter.With(labels).Add(float64(bytesReceived))
 	}
-	if bytesSent := utils.ExtractBytesSent(output); bytesSent > 0 {
+
+	// Update bytes sent counter
+	if bytesSent > 0 {
 		metrics.NetworkBytesSentCounter.With(labels).Add(float64(bytesSent))
 	}
 
-	utils.LogSDK("Network stats update: %s", output)
+	// Update packet loss gauge
+	if packetLoss > 0 {
+		metrics.PacketLossGauge.With(labels).Set(packetLoss)
+	}
+
+	// Update latency gauge
+	if latency > 0 {
+		metrics.PlayerLatencyGauge.With(labels).Set(latency)
+	}
+
+	// Log network stats
+	logEvent("network_stats", fmt.Sprintf("Network stats: Received=%d bytes, Sent=%d bytes, Loss=%.2f%%, Latency=%.2f ms",
+		bytesReceived, bytesSent, packetLoss*100, latency), nil, map[string]string{
+		"server_id":      labels["server_id"],
+		"server_name":    labels["server_name"],
+		"server_type":    labels["server_type"],
+		"bytes_received": fmt.Sprintf("%d", bytesReceived),
+		"bytes_sent":     fmt.Sprintf("%d", bytesSent),
+		"packet_loss":    fmt.Sprintf("%.4f", packetLoss),
+		"latency_ms":     fmt.Sprintf("%.2f", latency),
+	})
 }
 
 // handleError logs server errors and updates the error metrics accordingly.
@@ -586,19 +701,33 @@ func handleSessionTime(output string, state *types.ServerState, labels map[strin
 	}).Set(float64(remainingTime))
 }
 
-// handleLobbyRegistration handles lobby registration-related events
+// handleLobbyRegistration processes lobby registration events and updates relevant metrics.
 func handleLobbyRegistration(output string, state *types.ServerState, labels map[string]string) {
-	status := "success"
-	details := utils.ExtractLobbyDetails(output)
+	// Extract registration details
+	details := "unknown"
+	if strings.Contains(output, "successful") {
+		details = "success"
+	} else if strings.Contains(output, "failed") {
+		details = "failure"
+	}
 
+	// Increment lobby registration counter
 	metrics.LobbyRegistrationCounter.With(labels).Inc()
 
-	// Enregistrer le statut détaillé
+	// Increment detailed lobby registration status counter
 	metrics.LobbyRegistrationStatusCounter.With(map[string]string{
-		"server_id": labels["server_id"],
-		"status":    status,
-		"details":   details,
+		"server_id":   labels["server_id"],
+		"server_name": labels["server_name"],
+		"server_type": labels["server_type"],
+		"status":      details,
+		"details":     output,
 	}).Inc()
+
+	// Log the lobby registration event
+	logEvent("lobby_registration", fmt.Sprintf("Lobby registration: %s", details), state, map[string]string{
+		"status":  details,
+		"details": output,
+	})
 }
 
 // handleUpdateLoop handles update loop-related events
@@ -684,22 +813,34 @@ func handleSteamConnection(output string, _ *types.ServerState, _ map[string]str
 	// Don't log anything
 }
 
+// handleAttemptingToConnect processes connection attempts and updates relevant metrics.
 func handleAttemptingToConnect(output string, state *types.ServerState, labels map[string]string) {
 	playerInfo := utils.ExtractPlayerInfo(output)
 
-	// Incrémenter le compteur de tentatives
+	// Increment connection attempts counter
 	metrics.ConnectionAttemptsCounter.With(map[string]string{
-		"server_id": labels["server_id"],
-		"status":    "attempt",
+		"server_id":   labels["server_id"],
+		"server_name": labels["server_name"],
+		"server_type": labels["server_type"],
+		"status":      "attempting",
 	}).Inc()
 
-	// Enregistrer le statut détaillé
+	// Increment connection status counter with player details
 	metrics.ConnectionStatusCounter.With(map[string]string{
 		"server_id":   labels["server_id"],
+		"server_name": labels["server_name"],
+		"server_type": labels["server_type"],
 		"player_name": playerInfo.Name,
 		"steam_id":    playerInfo.SteamID,
 		"status":      "attempting",
 	}).Inc()
+
+	// Log the connection attempt
+	logEvent("connection_attempt", fmt.Sprintf("Player %s is attempting to connect", playerInfo.Name), state, map[string]string{
+		"player_name": playerInfo.Name,
+		"player_id":   playerInfo.SteamID,
+		"status":      "attempting",
+	})
 }
 
 func handleExtraCSPFeatures(output string, _ *types.ServerState, _ map[string]string) {
@@ -728,6 +869,12 @@ func handleChatMessage(output string, state *types.ServerState, labels map[strin
 	playerName := utils.ExtractName(output)
 	messageContent := utils.ExtractChatMessage(output)
 	messageType := determineChatType(messageContent) // admin, global, team, etc.
+
+	// Si le message est vide, ne rien faire
+	if messageContent == "" {
+		utils.LogWarning("Empty chat message detected: %s", output)
+		return
+	}
 
 	// Try to extract the player's Steam ID
 	steamID := utils.ExtractSteamID(output)
@@ -775,12 +922,15 @@ func handleChatMessage(output string, state *types.ServerState, labels map[strin
 	metrics.ChatMessagesBySessionCounter.With(sessionLabels).Inc()
 
 	// Incrémenter le compteur détaillé
-	metrics.ChatMessagesByTypeCounter.With(map[string]string{
+	// Note: Nous ne stockons pas le contenu complet du message pour éviter les problèmes de cardinalité
+	detailedLabels := map[string]string{
 		"server_id":    labels["server_id"],
 		"player_name":  playerName,
 		"message_type": messageType,
-		"content":      messageContent,
-	}).Inc()
+		// Stocker seulement les premiers mots du message ou une version hachée pour les métriques
+		"content_hash": utils.HashString(messageContent)[:8],
+	}
+	metrics.ChatMessagesByTypeCounter.With(detailedLabels).Inc()
 
 	// Record message length in the histogram
 	lengthLabels := map[string]string{
@@ -793,13 +943,21 @@ func handleChatMessage(output string, state *types.ServerState, labels map[strin
 	metrics.ChatMessageLengthHistogram.With(lengthLabels).Observe(float64(len(messageContent)))
 
 	// Log the chat message with dedicated labels
-	logEvent("chat_message", messageContent, state, map[string]string{
+	// Pour les logs, nous pouvons stocker le message complet car ils sont moins sensibles à la cardinalité
+	chatLabels := map[string]string{
 		"player_name":  playerName,
 		"message_type": messageType,
 		"player_id":    steamID,
 		"session_type": sessionType,
 		"session_id":   sessionID,
-	})
+		"event_type":   "chat_message", // Ajouter un label spécifique pour les messages de chat
+	}
+
+	// Créer un message formaté pour les logs
+	formattedMessage := fmt.Sprintf("[CHAT] %s: %s", playerName, messageContent)
+
+	// Envoyer le log avec le message formaté
+	logEvent("chat_message", formattedMessage, state, chatLabels)
 }
 
 func handleCleanExit(output string, _ *types.ServerState, _ map[string]string) {
@@ -833,12 +991,21 @@ func logServerOutput(output string, state *types.ServerState) {
 		level = "WARNING"
 	} else if strings.Contains(output, "CHAT") {
 		eventType = "chat_message"
+		// Les messages de chat sont traités séparément par handleChatMessage
+		// Nous ne faisons qu'un log basique ici pour éviter les doublons
+		utils.LogInfo("[CHAT] Raw message: %s", output)
+		return
 	} else if strings.Contains(output, "CONNECTED") {
 		eventType = "player_connect"
 	} else if strings.Contains(output, "DISCONNECTED") {
 		eventType = "player_disconnect"
 	} else if strings.Contains(output, "SESSION") {
 		eventType = "session_change"
+	} else if strings.Contains(output, "LAP") {
+		eventType = "lap_completed"
+	} else if strings.Contains(output, "Collision") {
+		eventType = "collision"
+		level = "WARNING"
 	}
 
 	// Create labels based on the event type
@@ -852,7 +1019,7 @@ func logServerOutput(output string, state *types.ServerState) {
 	}
 
 	// Add player information if available
-	if strings.Contains(output, "CHAT") || strings.Contains(output, "CONNECTED") || strings.Contains(output, "DISCONNECTED") {
+	if strings.Contains(output, "CONNECTED") || strings.Contains(output, "DISCONNECTED") {
 		playerName := utils.ExtractName(output)
 		if playerName != "" {
 			labels["player_name"] = playerName
@@ -871,4 +1038,134 @@ func logServerOutput(output string, state *types.ServerState) {
 
 	// Also log to standard output for debugging
 	utils.LogInfo("[%s] %s", eventType, output)
+}
+
+// handleCollision processes collision events and updates relevant metrics.
+func handleCollision(output string, state *types.ServerState, labels map[string]string) {
+	// Extract collision information
+	collisionType := "environment"
+	if strings.Contains(output, "Collision between") && strings.Contains(output, "and") {
+		collisionType = "car"
+	}
+
+	// Extract player information
+	playerName := utils.ExtractName(output)
+	steamID := utils.ExtractSteamID(output)
+
+	// Extract speed if available
+	speed := 0.0
+	speedMatch := regexp.MustCompile(`speed (\d+\.?\d*)km/h`).FindStringSubmatch(output)
+	if len(speedMatch) > 1 {
+		speed, _ = strconv.ParseFloat(speedMatch[1], 64)
+	}
+
+	// Create collision labels
+	collisionLabels := map[string]string{
+		"server_id":      labels["server_id"],
+		"server_name":    labels["server_name"],
+		"server_type":    labels["server_type"],
+		"collision_type": collisionType,
+		"player_name":    playerName,
+		"player_id":      steamID,
+	}
+
+	// Increment collision counter
+	metrics.CollisionCounter.With(collisionLabels).Inc()
+
+	// Increment incident counter
+	metrics.IncidentCounter.With(map[string]string{
+		"server_id":     labels["server_id"],
+		"server_name":   labels["server_name"],
+		"server_type":   labels["server_type"],
+		"incident_type": "collision",
+		"player_name":   playerName,
+		"player_id":     steamID,
+	}).Inc()
+
+	// Increment session incidents counter
+	if state.CurrentSession != nil {
+		sessionLabels := map[string]string{
+			"server_id":    labels["server_id"],
+			"server_name":  labels["server_name"],
+			"server_type":  labels["server_type"],
+			"session_id":   state.CurrentSession.ID,
+			"session_type": state.CurrentSession.Type,
+		}
+		metrics.SessionIncidentsCounter.With(sessionLabels).Inc()
+	}
+
+	// Log the collision event
+	logEvent("collision", fmt.Sprintf("Collision detected: %s (Speed: %.1f km/h)", collisionType, speed), state, collisionLabels)
+}
+
+// handleLap processes lap completion events and updates relevant metrics.
+func handleLap(output string, state *types.ServerState, labels map[string]string) {
+	// Extract player information
+	playerName := utils.ExtractName(output)
+	steamID := utils.ExtractSteamID(output)
+
+	// Extract lap time if available
+	lapTimeMs := int64(0)
+	lapTimeMatch := regexp.MustCompile(`LAP (\d+:\d+\.\d+)`).FindStringSubmatch(output)
+	if len(lapTimeMatch) > 1 {
+		// Convert lap time format (e.g., "1:23.456") to milliseconds
+		parts := strings.Split(lapTimeMatch[1], ":")
+		if len(parts) == 2 {
+			minutes, _ := strconv.ParseInt(parts[0], 10, 64)
+			secondsParts := strings.Split(parts[1], ".")
+			seconds, _ := strconv.ParseInt(secondsParts[0], 10, 64)
+			milliseconds := int64(0)
+			if len(secondsParts) > 1 {
+				// Handle milliseconds, padding if necessary
+				msStr := secondsParts[1]
+				for len(msStr) < 3 {
+					msStr += "0"
+				}
+				milliseconds, _ = strconv.ParseInt(msStr[:3], 10, 64)
+			}
+
+			lapTimeMs = (minutes * 60 * 1000) + (seconds * 1000) + milliseconds
+		}
+	}
+
+	// Create lap labels
+	lapLabels := map[string]string{
+		"server_id":   labels["server_id"],
+		"server_name": labels["server_name"],
+		"server_type": labels["server_type"],
+		"player_name": playerName,
+		"player_id":   steamID,
+	}
+
+	// Add car model and track if available
+	if state.CurrentSession != nil {
+		lapLabels["track"] = state.CurrentTrack
+
+		// Find car model for the player
+		state.RLock()
+		if player, ok := state.ConnectedPlayers[steamID]; ok {
+			lapLabels["car_model"] = player.CarModel
+		}
+		state.RUnlock()
+	}
+
+	// Record lap time in histogram
+	if lapTimeMs > 0 {
+		metrics.LapTimeHistogram.With(lapLabels).Observe(float64(lapTimeMs) / 1000.0) // Convert to seconds
+	}
+
+	// Increment session laps counter
+	if state.CurrentSession != nil {
+		sessionLabels := map[string]string{
+			"server_id":    labels["server_id"],
+			"server_name":  labels["server_name"],
+			"server_type":  labels["server_type"],
+			"session_id":   state.CurrentSession.ID,
+			"session_type": state.CurrentSession.Type,
+		}
+		metrics.SessionLapsCounter.With(sessionLabels).Inc()
+	}
+
+	// Log the lap event
+	logEvent("lap_completed", fmt.Sprintf("Lap completed by %s (Time: %d ms)", playerName, lapTimeMs), state, lapLabels)
 }

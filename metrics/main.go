@@ -43,6 +43,22 @@ func (i *interceptor) Write(p []byte) (n int, err error) {
 	return i.forward.Write(p)
 }
 
+// waitForTerminationSignal attend un signal de terminaison et annule le contexte
+func waitForTerminationSignal(cancel context.CancelFunc) {
+	// Créer un canal pour les signaux
+	sigs := make(chan os.Signal, 1)
+
+	// Enregistrer les signaux à intercepter
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	// Attendre un signal
+	sig := <-sigs
+	utils.LogInfo("Received signal: %v", sig)
+
+	// Annuler le contexte pour déclencher l'arrêt gracieux
+	cancel()
+}
+
 // main is the entry point of the application.
 // It initializes the Agones SDK, starts the Assetto Corsa server,
 // and manages the server's lifecycle including health checks and metrics.
@@ -135,19 +151,79 @@ func main() {
 	captureServerEvents := func(line string) {
 		// Filtrer les lignes pertinentes
 		if strings.Contains(line, "Collision between") ||
-			strings.Contains(line, "CHAT:") {
+			strings.Contains(line, "LAP") ||
+			strings.Contains(line, "Network stats") ||
+			strings.Contains(line, "CONNECTED") ||
+			strings.Contains(line, "DISCONNECTED") ||
+			strings.Contains(line, "SESSION") ||
+			strings.Contains(line, "Lobby registration") ||
+			strings.Contains(line, "ERROR") ||
+			strings.Contains(line, "Warning") {
+
+			// Envoyer l'événement au canal pour traitement
 			eventChan <- line
 
-			// Ajouter un envoi direct à VictoriaLogs pour les messages de chat
-			if strings.Contains(line, "CHAT:") {
-				chatParts := strings.SplitN(line, "CHAT:", 2)
-				if len(chatParts) > 1 {
-					chatMessage := strings.TrimSpace(chatParts[1])
-					logsClient.LogEvent("INFO", chatMessage, "chat_message", map[string]string{
-						"server_id": serverState.ServerID,
-						"source":    "chat",
-					})
+			// Déterminer le type d'événement pour le log
+			eventType := "server_output"
+			level := "INFO"
+
+			if strings.Contains(line, "Collision between") {
+				eventType = "collision"
+				level = "WARNING"
+			} else if strings.Contains(line, "LAP") {
+				eventType = "lap_completed"
+			} else if strings.Contains(line, "CONNECTED") {
+				eventType = "player_connect"
+			} else if strings.Contains(line, "DISCONNECTED") {
+				eventType = "player_disconnect"
+			} else if strings.Contains(line, "SESSION") {
+				eventType = "session_change"
+			} else if strings.Contains(line, "Lobby registration") {
+				eventType = "lobby_registration"
+			} else if strings.Contains(line, "ERROR") {
+				eventType = "server_error"
+				level = "ERROR"
+			} else if strings.Contains(line, "Warning") {
+				eventType = "server_warning"
+				level = "WARNING"
+			}
+
+			// Envoyer l'événement à VictoriaLogs
+			logsClient.LogEvent(level, line, eventType, map[string]string{
+				"server_id":  serverState.ServerID,
+				"source":     "server_log",
+				"event_type": eventType,
+			})
+		} else if strings.Contains(line, "CHAT:") {
+			// Traitement spécial pour les messages de chat
+			eventType := "chat_message"
+			level := "INFO"
+
+			// Extraire le message de chat
+			chatParts := strings.SplitN(line, "CHAT:", 2)
+			if len(chatParts) > 1 {
+				// Extraire le nom du joueur si possible
+				playerName := utils.ExtractName(line)
+
+				// Extraire le contenu du message
+				chatMessage := utils.ExtractChatMessage(line)
+
+				// Créer un message formaté
+				formattedMessage := chatMessage
+				if playerName != "" {
+					formattedMessage = fmt.Sprintf("%s: %s", playerName, chatMessage)
 				}
+
+				// Envoyer le message au canal pour traitement
+				eventChan <- line
+
+				// Envoyer directement à VictoriaLogs avec des labels spécifiques
+				logsClient.LogEvent(level, formattedMessage, eventType, map[string]string{
+					"server_id":   serverState.ServerID,
+					"source":      "chat",
+					"event_type":  eventType,
+					"player_name": playerName,
+				})
 			}
 		}
 	}
@@ -179,10 +255,39 @@ func main() {
 		logMonitor.Start(ctx)
 	}()
 
-	// Start monitoring
+	// Initialiser et démarrer le moniteur système
+	systemMonitor, err := monitoring.NewSystemMonitor(serverState, metricsClient)
+	if err != nil {
+		utils.LogError("Erreur lors de l'initialisation du moniteur système: %v", err)
+	} else {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			systemMonitor.Start(ctx)
+		}()
+
+		// Surveiller la latence réseau vers des hôtes spécifiques
+		targetHosts := []string{
+			"steam.corsa.club:27015",
+			"api.corsa.club:443",
+			"metrics.corsa.club:8428",
+		}
+
+		for _, host := range targetHosts {
+			wg.Add(1)
+			go func(targetHost string) {
+				defer wg.Done()
+				systemMonitor.MonitorNetworkLatency(ctx, targetHost)
+			}(host)
+		}
+	}
+
+	// Start monitoring (utiliser le nouveau SystemMonitor au lieu de MonitorSystemResources)
 	go monitoring.MonitorHealthMetrics(ctx, metricsClient, serverState)
-	go monitoring.MonitorSystemResources(ctx, serverState)
+	// Remplacer l'ancienne fonction par notre nouveau moniteur système
+	// go monitoring.MonitorSystemResources(ctx, serverState)
 	go monitoring.MonitorDetailedMetrics(ctx, metricsClient, serverState)
+	go monitoring.MonitorSessionMetrics(ctx, metricsClient, serverState)
 
 	// Démarrer le monitoring des performances internes
 	go metrics.StartPerformanceMonitoring(ctx, metricsClient)
@@ -237,124 +342,14 @@ func main() {
 				// In test mode, start a simple keep-alive routine
 				startKeepAliveRoutine(ctx)
 			}
-		} else {
-			utils.LogInfo("Server process exited normally")
-			// Only initiate graceful shutdown if this is not a test mode
-			if os.Getenv("TEST_MODE") != "true" {
-				cancel()
-			} else {
-				utils.LogInfo("Test script completed, but keeping container alive")
-				// In test mode, start a simple keep-alive routine
-				startKeepAliveRoutine(ctx)
-			}
 		}
 	}()
 
-	// Handle termination signals
-	setupSignalHandler(cancel, serverState)
+	// Wait for termination signals
+	waitForTerminationSignal(cancel)
 
-	// Initialize HTTP server for health checks
-	initHealthServer(serverState, wsServer)
-
-	// After initializing the metrics client
-	utils.LogInfo("Testing VictoriaMetrics connection")
-	testVictoriaMetricsConnection(metricsClient, serverID)
-
-	// Dans la fonction main, après l'initialisation du client
-	utils.LogInfo("Testing direct metric send to VictoriaMetrics")
-	testMetric := types.MetricBatch{
-		Metrics: []types.Metric{
-			{
-				Name:      "assetto_server_test_direct",
-				Value:     float64(time.Now().Unix()),
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id": serverState.ServerID,
-					"test":      "direct_send",
-					"timestamp": time.Now().Format(time.RFC3339),
-				},
-			},
-		},
-		Time: time.Now(),
-	}
-
-	// Envoi direct sans passer par le buffer
-	if err := metricsClient.SendMetricsImmediate(testMetric); err != nil {
-		utils.LogError("Direct metric send failed: %v", err)
-	} else {
-		utils.LogInfo("Direct metric send successful")
-	}
-
-	// At the end of main()
-	utils.LogInfo("Main function completed, container should continue running")
-
-	// Block forever to keep the application running
-	utils.LogInfo("Blocking main goroutine to keep container alive")
-	blockForever := make(chan struct{})
-
-	// Add a goroutine to periodically log the application state
-	go func() {
-		stateTicker := time.NewTicker(60 * time.Second)
-		defer stateTicker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				utils.LogInfo("Context cancelled, stopping state logging")
-				return
-			case <-stateTicker.C:
-				// Log detailed application state
-				serverState.RLock()
-				utils.LogInfo("=== APPLICATION STATE ===")
-				utils.LogInfo("Server ID: %s, Name: %s, Region: %s",
-					serverState.ServerID, serverState.ServerName, serverState.ServerRegion)
-				utils.LogInfo("Ready: %v, Players: %d, ShuttingDown: %v",
-					serverState.Ready, serverState.Players, serverState.ShuttingDown)
-				utils.LogInfo("Session Type: %s, Session ID: %s",
-					serverState.CurrentSession.Type, serverState.CurrentSession.ID)
-				utils.LogInfo("Last Ping: %v (%v ago)",
-					serverState.LastPing, time.Since(serverState.LastPing))
-				utils.LogInfo("Connected Players: %d", len(serverState.ConnectedPlayers))
-				utils.LogInfo("Active Goroutines: %d", runtime.NumGoroutine())
-
-				var memStats runtime.MemStats
-				runtime.ReadMemStats(&memStats)
-				utils.LogInfo("Memory Usage: Alloc=%v MB, Sys=%v MB",
-					memStats.Alloc/1024/1024, memStats.Sys/1024/1024)
-
-				utils.LogInfo("=== END STATE ===")
-				serverState.RUnlock()
-			}
-		}
-	}()
-
-	// Add a goroutine to monitor for potential exit conditions
-	go func() {
-		utils.LogInfo("Starting exit condition monitor")
-		for {
-			time.Sleep(5 * time.Second)
-
-			// Check if main context is done
-			select {
-			case <-ctx.Done():
-				utils.LogInfo("Main context cancelled - this could lead to application exit")
-				utils.LogInfo("Context error: %v", ctx.Err())
-				break
-			default:
-				// Context still active
-			}
-
-			// Check server state
-			serverState.RLock()
-			if serverState.ShuttingDown {
-				utils.LogInfo("Server is in shutting down state - this could lead to application exit")
-			}
-			serverState.RUnlock()
-		}
-	}()
-
-	<-blockForever // This will block forever
+	// Wait for all goroutines to finish
+	wg.Wait()
 }
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
