@@ -16,14 +16,21 @@ const (
 	// Existing metrics...
 
 	// Enhanced monitoring metrics
-	MetricDroppedTotal       = "assetto_metrics_dropped_total"
-	MetricBufferUsage        = "assetto_metrics_buffer_usage"
-	MetricBatchSizeHistogram = "assetto_metrics_batch_size"
-	MetricProcessingDuration = "assetto_metrics_processing_duration_seconds"
-	MetricValidationErrors   = "assetto_metrics_validation_errors_total"
-	MetricSendQueueSize      = "assetto_metrics_send_queue_size"
-	MetricRetryCount         = "assetto_metrics_retry_count_total"
-	MetricCompressionRatio   = "assetto_metrics_compression_ratio"
+	MetricDroppedTotal       = "assetto_server_metrics_dropped_total"
+	MetricBufferUsage        = "assetto_server_metrics_buffer_usage"
+	MetricBatchSizeHistogram = "assetto_server_metrics_batch_size"
+	MetricProcessingDuration = "assetto_server_metrics_processing_duration_seconds"
+	MetricValidationErrors   = "assetto_server_metrics_validation_errors_total"
+	MetricSendQueueSize      = "assetto_server_metrics_send_queue_size"
+	MetricRetryCount         = "assetto_server_metrics_retry_count_total"
+	MetricCompressionRatio   = "assetto_server_metrics_compression_ratio"
+)
+
+// Variables for metrics tracking
+var (
+	processedMetrics int64
+	droppedMetrics   int64
+	retryCount       int64
 )
 
 func MonitorMetrics(ctx context.Context, vmClient *victoria.MetricsClient, state *types.ServerState) {
@@ -128,19 +135,19 @@ func MonitorMetricsSystem(ctx context.Context, vmClient *victoria.MetricsClient)
 			// Métriques du wrapper
 			metrics := []types.Metric{
 				{
-					Name:      "assetto_wrapper_goroutines",
+					Name:      "assetto_server_wrapper_goroutines",
 					Value:     float64(runtime.NumGoroutine()),
 					Type:      types.Gauge,
 					Timestamp: time.Now(),
 				},
 				{
-					Name:      "assetto_wrapper_memory_alloc_bytes",
+					Name:      "assetto_server_wrapper_memory_alloc_bytes",
 					Value:     float64(getMemoryStats()),
 					Type:      types.Gauge,
 					Timestamp: time.Now(),
 				},
 				{
-					Name:      "assetto_wrapper_metrics_send_queue",
+					Name:      "assetto_server_wrapper_metrics_send_queue",
 					Value:     float64(len(vmClient.Buffer())),
 					Type:      types.Gauge,
 					Timestamp: time.Now(),
@@ -195,7 +202,7 @@ func (em *ErrorMonitor) RecordError(errorType string, err error) {
 	em.client.SendMetrics(types.MetricBatch{
 		Metrics: []types.Metric{
 			{
-				Name:  "assetto_wrapper_errors_total",
+				Name:  "assetto_server_wrapper_errors_total",
 				Value: float64(count),
 				Type:  types.Counter,
 				LabelValues: map[string]string{
@@ -296,19 +303,19 @@ func MonitorMetricsPerformance(ctx context.Context, vmClient *victoria.MetricsCl
 			// Calculate rates
 			metrics := []types.Metric{
 				{
-					Name:      "assetto_metrics_processed_rate",
+					Name:      "assetto_server_metrics_processed_rate",
 					Value:     float64(currentProcessed - lastProcessedCount),
 					Type:      types.Gauge,
 					Timestamp: time.Now(),
 				},
 				{
-					Name:      "assetto_metrics_dropped_rate",
+					Name:      "assetto_server_metrics_dropped_rate",
 					Value:     float64(currentDropped - lastDroppedCount),
 					Type:      types.Gauge,
 					Timestamp: time.Now(),
 				},
 				{
-					Name:      "assetto_metrics_retry_rate",
+					Name:      "assetto_server_metrics_retry_rate",
 					Value:     float64(currentRetries - lastRetryCount),
 					Type:      types.Gauge,
 					Timestamp: time.Now(),
@@ -329,13 +336,6 @@ func MonitorMetricsPerformance(ctx context.Context, vmClient *victoria.MetricsCl
 	}
 }
 
-// Add atomic counters for tracking
-var (
-	processedMetrics int64
-	droppedMetrics   int64
-	retryCount       int64
-)
-
 // Add helper functions to increment counters
 func incrementProcessedMetrics() {
 	atomic.AddInt64(&processedMetrics, 1)
@@ -348,3 +348,5 @@ func incrementDroppedMetrics() {
 func incrementRetryCount() {
 	atomic.AddInt64(&retryCount, 1)
 }
+
+// Wrapper metrics

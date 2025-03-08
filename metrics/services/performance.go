@@ -50,6 +50,30 @@ var (
 		append(ServerLabels, "thread_id"),
 	)
 
+	// Goroutines
+	GoroutinesGauge = NewMetric(
+		"assetto_server_goroutines_total",
+		"Number of goroutines",
+		Gauge,
+		ServerLabels,
+	)
+
+	// Memory Allocation
+	MemoryAllocGauge = NewMetric(
+		"assetto_server_memory_alloc_bytes",
+		"Memory allocation in bytes",
+		Gauge,
+		ServerLabels,
+	)
+
+	// GC Stats
+	GCPauseHistogram = NewMetric(
+		"assetto_server_gc_pause_seconds",
+		"GC pause time in seconds",
+		Histogram,
+		ServerLabels,
+	).WithBuckets(ExponentialBuckets(0.001, 2, 10)) // 1ms to ~1s
+
 	// Memory Usage
 	MemoryDetailedGauge = NewMetric(
 		"assetto_server_memory_detailed_bytes",
@@ -104,22 +128,30 @@ var (
 		nil,
 	)
 
+	// Metrics Processing
+	MetricsProcessed = NewMetric(
+		"assetto_server_metrics_processed_total",
+		"Number of metrics processed",
+		Counter,
+		nil,
+	)
+
+	MetricsRetried = NewMetric(
+		"assetto_server_metrics_retried_total",
+		"Number of metrics retried",
+		Counter,
+		nil,
+	)
+
 	MetricsDropped = NewMetric(
-		"assetto_metrics_dropped_total",
+		"assetto_server_metrics_dropped_total",
 		"Number of metrics dropped due to buffer full",
 		Counter,
 		[]string{"reason"},
 	)
 
-	GoroutineCount = NewMetric(
-		"assetto_goroutines_total",
-		"Number of running goroutines",
-		Gauge,
-		nil,
-	)
-
 	MemoryUsage = NewMetric(
-		"assetto_memory_usage_bytes",
+		"assetto_server_memory_usage_bytes",
 		"Current memory usage",
 		Gauge,
 		[]string{"type"},
@@ -169,7 +201,7 @@ func StartPerformanceMonitoring(ctx context.Context, client *victoria.MetricsCli
 			client.SendMetrics(types.MetricBatch{
 				Metrics: []types.Metric{
 					{
-						Name:      "assetto_memory_usage_bytes",
+						Name:      "assetto_server_memory_usage_bytes",
 						Value:     float64(memStats.Alloc),
 						Type:      types.MetricType(Gauge),
 						Timestamp: time.Now(),
@@ -178,7 +210,7 @@ func StartPerformanceMonitoring(ctx context.Context, client *victoria.MetricsCli
 						},
 					},
 					{
-						Name:      "assetto_goroutines_total",
+						Name:      "assetto_server_goroutines_total",
 						Value:     float64(runtime.NumGoroutine()),
 						Type:      types.MetricType(Gauge),
 						Timestamp: time.Now(),

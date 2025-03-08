@@ -38,17 +38,17 @@ const (
 	ServerCPUUsage    = "assetto_server_cpu_usage"
 
 	// Detailed system metrics
-	SystemCPUUsage       = "assetto_system_cpu_usage"
-	SystemMemoryTotal    = "assetto_system_memory_total_bytes"
-	SystemMemoryUsed     = "assetto_system_memory_used_bytes"
-	SystemMemoryFree     = "assetto_system_memory_free_bytes"
-	SystemMemorySwap     = "assetto_system_memory_swap_bytes"
-	SystemDiskUsage      = "assetto_system_disk_usage_bytes"
-	SystemDiskFree       = "assetto_system_disk_free_bytes"
-	SystemNetworkTraffic = "assetto_system_network_traffic_bytes"
-	SystemGoMemoryAlloc  = "assetto_go_memory_alloc_bytes"
-	SystemGoMemorySys    = "assetto_go_memory_sys_bytes"
-	SystemGoRoutines     = "assetto_go_routines"
+	SystemCPUUsage       = "assetto_server_system_cpu_usage"
+	SystemMemoryTotal    = "assetto_server_system_memory_total_bytes"
+	SystemMemoryUsed     = "assetto_server_system_memory_used_bytes"
+	SystemMemoryFree     = "assetto_server_system_memory_free_bytes"
+	SystemMemorySwap     = "assetto_server_system_memory_swap_bytes"
+	SystemDiskUsage      = "assetto_server_system_disk_usage_bytes"
+	SystemDiskFree       = "assetto_server_system_disk_free_bytes"
+	SystemNetworkTraffic = "assetto_server_system_network_traffic_bytes"
+	SystemGoMemoryAlloc  = "assetto_server_go_memory_alloc_bytes"
+	SystemGoMemorySys    = "assetto_server_go_memory_sys_bytes"
+	SystemGoRoutines     = "assetto_server_go_routines"
 
 	// Session metrics
 	SessionDuration  = "assetto_server_session_duration_seconds"

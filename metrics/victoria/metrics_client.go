@@ -2,10 +2,12 @@ package victoria
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -468,12 +470,13 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 	return nil
 }
 
-// LogEvent envoie un événement de log à VictoriaMetrics
-func (c *MetricsClient) LogEvent(level string, message string, eventType string, labels map[string]string) {
+// LogEvent crée et envoie un événement de log unique
+func (c *MetricsClient) LogEvent(level, message string, eventType string, labels map[string]string) error {
+	// Envoyer un événement à VictoriaMetrics
 	c.SendMetrics(types.MetricBatch{
 		Metrics: []types.Metric{
 			{
-				Name:  "assetto_event",
+				Name:  "assetto_server_event",
 				Value: 1,
 				Type:  types.Counter,
 				LabelValues: map[string]string{
@@ -485,6 +488,47 @@ func (c *MetricsClient) LogEvent(level string, message string, eventType string,
 		},
 		Time: time.Now(),
 	})
+
+	return nil
+}
+
+// Envoyer un événement à VictoriaLogs
+func (c *MetricsClient) SendEvent(eventType, message string, labels map[string]string) error {
+	// Créer un événement
+	event := map[string]interface{}{
+		"_msg":       message,
+		"_time":      time.Now().Format(time.RFC3339),
+		"event_type": eventType,
+	}
+
+	// Ajouter les labels
+	for k, v := range labels {
+		event[k] = v
+	}
+
+	// Convertir en JSON
+	jsonData, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal event: %v", err)
+	}
+
+	// Envoyer à VictoriaLogs
+	data := url.Values{}
+	data.Set("format", "json")
+	data.Set("stream", "assetto_server_event")
+	data.Set("data", string(jsonData))
+
+	resp, err := c.client.PostForm(c.URL+"/api/v1/logs/insert", data)
+	if err != nil {
+		return fmt.Errorf("failed to send event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code when sending event: %d", resp.StatusCode)
+	}
+
+	return nil
 }
 
 // Ajouter une méthode de flush avec retry
@@ -523,7 +567,7 @@ func (c *MetricsClient) handleError(err error, code string, retryable bool) erro
 	c.SendMetrics(types.MetricBatch{
 		Metrics: []types.Metric{
 			{
-				Name:      "assetto_metrics_errors_total",
+				Name:      "assetto_server_metrics_errors_total",
 				Value:     1,
 				Type:      types.Counter,
 				Timestamp: time.Now(),
