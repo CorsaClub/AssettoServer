@@ -103,6 +103,10 @@ func (sm *SystemMonitor) Start(ctx context.Context) {
 	goTicker := time.NewTicker(10 * time.Second)
 	defer goTicker.Stop()
 
+	// Collecter l'état du serveur régulièrement
+	stateTicker := time.NewTicker(5 * time.Second)
+	defer stateTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -115,6 +119,8 @@ func (sm *SystemMonitor) Start(ctx context.Context) {
 			sm.collectDiskMetrics()
 		case <-goTicker.C:
 			sm.collectGoMetrics()
+		case <-stateTicker.C:
+			sm.collectServerState()
 		}
 	}
 }
@@ -479,6 +485,51 @@ func (sm *SystemMonitor) collectGoMetrics() {
 	// Envoyer les métriques
 	if err := sm.vmClient.SendMetrics(batch); err != nil {
 		utils.LogError("Erreur lors de l'envoi des métriques Go: %v", err)
+	}
+}
+
+// collectServerState collecte et envoie la métrique d'état du serveur
+func (sm *SystemMonitor) collectServerState() {
+	// Créer les labels
+	labels := map[string]string{
+		"server_id":   sm.state.ServerID,
+		"server_name": sm.state.ServerName,
+		"server_type": sm.state.ServerType,
+	}
+
+	// Déterminer l'état actuel du serveur
+	var serverState int
+	sm.state.RLock()
+	if sm.state.ShuttingDown {
+		serverState = types.ServerStateShutdown
+	} else if sm.state.Ready {
+		serverState = types.ServerStateReady
+	} else if sm.state.Allocated {
+		serverState = types.ServerStateAllocated
+	} else {
+		serverState = types.ServerStateStarting
+	}
+	sm.state.RUnlock()
+
+	// Créer un lot de métriques
+	batch := types.MetricBatch{
+		Metrics: []types.Metric{
+			{
+				Name:        metrics.ServerStateGauge.Name,
+				Value:       float64(serverState),
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: labels,
+			},
+		},
+		Time: time.Now(),
+	}
+
+	// Envoyer les métriques
+	if err := sm.vmClient.SendMetrics(batch); err != nil {
+		utils.LogError("Erreur lors de l'envoi de la métrique d'état du serveur: %v", err)
+	} else {
+		utils.LogDebug("Métrique d'état du serveur envoyée: %d", serverState)
 	}
 }
 
