@@ -79,13 +79,15 @@ func MonitorMetrics(ctx context.Context, vmClient *victoria.MetricsClient, state
 			for _, player := range state.ConnectedPlayers {
 				metrics = append(metrics,
 					types.Metric{
-						Name:      "assetto_server_player_latency",
+						Name:      "assetto_server_network_latency_ms",
 						Value:     float64(player.Latency),
 						Type:      types.Gauge,
 						Timestamp: time.Now(),
 						LabelValues: map[string]string{
 							"player_id":   player.SteamID,
 							"player_name": player.Name,
+							"server_id":   state.ServerID,
+							"server_name": state.ServerName,
 						},
 					},
 					types.Metric{

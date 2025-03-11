@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"metrics/config"
+	"metrics/geoip"
 	"metrics/handlers"
 	"metrics/monitoring"
 	metrics "metrics/services"
@@ -103,7 +104,7 @@ func main() {
 		},
 	}
 
-	// Charger la configuration
+	// Create server configuration
 	serverConfig := &types.Config{
 		VictoriaMetrics: struct {
 			Endpoint    string        `json:"endpoint"`
@@ -129,6 +130,13 @@ func main() {
 			MaxFileSize: 100 * 1024 * 1024, // 100MB
 			MaxFiles:    10,
 		},
+		GeoIP: struct {
+			Enabled      bool   `json:"enabled"`
+			DatabasePath string `json:"database_path"`
+		}{
+			Enabled:      true,
+			DatabasePath: "./GeoLite2-City.mmdb",
+		},
 	}
 
 	// Initialize VictoriaMetrics client
@@ -139,6 +147,25 @@ func main() {
 
 	// Set the logs client in the utils package for global access
 	utils.SetLogsClient(logsClient)
+
+	// Initialize GeoIP service if enabled
+	var geoipService *geoip.GeoIPService
+	if serverConfig.GeoIP.Enabled {
+		utils.LogInfo("Initializing GeoIP service with database: %s", serverConfig.GeoIP.DatabasePath)
+		var err error
+		geoipConfig := &config.GeoIPConfig{
+			Enabled:      serverConfig.GeoIP.Enabled,
+			DatabasePath: serverConfig.GeoIP.DatabasePath,
+		}
+		geoipService, err = geoip.InitGeoIPService(geoipConfig)
+		if err != nil {
+			utils.LogWarning("Failed to initialize GeoIP service: %v", err)
+		} else {
+			utils.LogInfo("GeoIP service initialized successfully")
+		}
+	} else {
+		utils.LogInfo("GeoIP service is disabled")
+	}
 
 	// Test connections
 	testVictoriaMetricsConnection(metricsClient, serverState.ServerID)
@@ -305,8 +332,10 @@ func main() {
 	wsServer := websocket.NewWebSocketServer(authConfig)
 	go wsServer.Start(ctx)
 
-	// Prepare and start the server
+	// Create a channel to signal when the server is ready
 	serverReady := make(chan struct{}, 1)
+
+	// Prepare and start the server
 	var scriptPath string
 	if os.Getenv("TEST_MODE") == "true" {
 		scriptPath = "/app/test-script.sh"
@@ -314,14 +343,11 @@ func main() {
 	} else {
 		scriptPath = *input
 	}
-	cmd := prepareServerCommand(ctx, &scriptPath, args, serverState, serverReady, metricsClient, wsServer, logsClient)
+	cmd := prepareServerCommand(ctx, &scriptPath, args, serverState, serverReady, metricsClient, wsServer, logsClient, geoipService, cancel)
 	if err := cmd.Start(); err != nil {
 		utils.LogError("Error Starting Cmd: %v", err)
 		os.Exit(1)
 	}
-
-	// Start monitoring the process
-	monitorProcessExit(cmd)
 
 	// Add this code to wait for the command to finish with detailed error reporting
 	go func() {
@@ -354,7 +380,7 @@ func main() {
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
 // It sets up output interception and command arguments.
-func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, metricsClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer, logsClient victoria.LogsClient) *exec.Cmd {
+func prepareServerCommand(ctx context.Context, input *string, args *string, state *types.ServerState, serverReady chan struct{}, metricsClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer, logsClient victoria.LogsClient, geoipService *geoip.GeoIPService, cancel context.CancelFunc) *exec.Cmd {
 	utils.LogInfo("Preparing server command: %s", *input)
 
 	// Check if the script file exists and is executable
@@ -467,7 +493,7 @@ func prepareServerCommand(ctx context.Context, input *string, args *string, stat
 			wsServer.BroadcastLog(logEntry)
 
 			// Process the output through the handler
-			handlers.HandleServerOutput(str, metricsClient, state, serverReady, nil)
+			handlers.HandleServerOutput(str, metricsClient, state, serverReady, cancel, geoipService)
 		},
 	}
 

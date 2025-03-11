@@ -27,6 +27,12 @@ const (
 	NetworkErrors          = "assetto_server_network_errors_total"
 	NetworkDrops           = "assetto_server_network_drops_total"
 
+	// GeoIP metrics
+	PlayerCountryConnections = "assetto_server_player_country_connections_total"
+	PlayerCountryActive      = "assetto_server_player_country_active"
+	PlayerCityConnections    = "assetto_server_player_city_connections_total"
+	PlayerCityActive         = "assetto_server_player_city_active"
+
 	// CSP metrics
 	CSPVersion        = "assetto_server_csp_version"
 	CSPFeatureEnabled = "assetto_server_csp_feature_enabled"
@@ -514,6 +520,35 @@ var (
 		"Server invitation URLs generated",
 		Counter,
 		append(ServerLabels, "url_hash"),
+	)
+
+	// GeoIP metrics
+	PlayerCountryConnectionsCounter = NewMetric(
+		PlayerCountryConnections,
+		"Total number of player connections by country",
+		Counter,
+		append(ServerLabels, "country", "country_code"),
+	)
+
+	PlayerCountryActiveGauge = NewMetric(
+		PlayerCountryActive,
+		"Number of active players by country",
+		Gauge,
+		append(ServerLabels, "country", "country_code"),
+	)
+
+	PlayerCityConnectionsCounter = NewMetric(
+		PlayerCityConnections,
+		"Total number of player connections by city",
+		Counter,
+		append(ServerLabels, "country", "country_code", "city"),
+	)
+
+	PlayerCityActiveGauge = NewMetric(
+		PlayerCityActive,
+		"Number of active players by city",
+		Gauge,
+		append(ServerLabels, "country", "country_code", "city"),
 	)
 )
 

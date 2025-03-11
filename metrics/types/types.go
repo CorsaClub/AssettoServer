@@ -35,13 +35,19 @@ type ServerState struct {
 
 // Player represents a player connected to the server.
 type Player struct {
-	Name       string  // Player's name
-	SteamID    string  // Player's Steam ID
-	CarModel   string  // Car model used by the player
-	BestLap    int64   // Player's best lap time (ms)
-	LastLap    int64   // Player's latest lap time (ms)
-	Latency    int     // Player's latency (ms)
-	PacketLoss float64 // Player's packet loss percentage
+	Name        string  // Player's name
+	SteamID     string  // Player's Steam ID
+	CarModel    string  // Car model used by the player
+	BestLap     int64   // Player's best lap time (ms)
+	LastLap     int64   // Player's latest lap time (ms)
+	Latency     int     // Player's latency (ms)
+	PacketLoss  float64 // Player's packet loss percentage
+	IP          string  // Player's IP address
+	Country     string  // Player's country
+	CountryCode string  // Player's country code
+	City        string  // Player's city
+	Latitude    float64 // Player's latitude
+	Longitude   float64 // Player's longitude
 }
 
 // Session represents a game session.
@@ -102,6 +108,12 @@ type Config struct {
 		MaxFileSize int64    `json:"max_file_size"`
 		MaxFiles    int      `json:"max_files"`
 	} `json:"logging"`
+
+	// GeoIP configuration
+	GeoIP struct {
+		Enabled      bool   `json:"enabled"`
+		DatabasePath string `json:"database_path"`
+	} `json:"geoip"`
 }
 
 // LogEvent represents a structured log event with contextual information.
@@ -145,4 +157,14 @@ type Log struct {
 	Message   string            `json:"message"`
 	Source    string            `json:"source"`
 	Labels    map[string]string `json:"-"` // Les labels seront ajoutés comme champs individuels
+}
+
+// GeoLocation represents geolocation information for an IP address.
+type GeoLocation struct {
+	IP          string  // IP address
+	Country     string  // Country name
+	CountryCode string  // Country code (ISO 3166-1 alpha-2)
+	City        string  // City name
+	Latitude    float64 // Latitude
+	Longitude   float64 // Longitude
 }

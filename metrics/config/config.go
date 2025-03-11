@@ -42,10 +42,17 @@ type MetricsConfig struct {
 	MaxMetricNameLength int           `json:"max_metric_name_length"`
 }
 
+// Config represents the configuration for the metrics service.
 type Config struct {
+	ServerID     string `yaml:"server_id"`
+	ServerName   string `yaml:"server_name"`
+	ServerRegion string `yaml:"server_region"`
+	ServerType   string `yaml:"server_type"`
+
 	Victoria     VictoriaConfig     `json:"victoria"`
 	VictoriaLogs VictoriaLogsConfig `json:"victoria_logs"`
 	Metrics      MetricsConfig      `json:"metrics"`
+	GeoIP        GeoIPConfig        `json:"geoip"`
 }
 
 // AuthConfig is for websocket authentication
@@ -76,6 +83,8 @@ const (
 	DefaultMaxLabelValueLength = 100
 	DefaultMaxMetricNameLength = 200
 	DefaultTimeout             = 10 * time.Second
+	DefaultGeoIPEnabled        = false
+	DefaultGeoIPDatabasePath   = "./GeoLite2-City.mmdb"
 )
 
 // NewDefaultConfig returns a Config with sensible defaults
@@ -114,6 +123,10 @@ func NewDefaultConfig() *Config {
 			MaxLabelValueLength: DefaultMaxLabelValueLength,
 			MaxMetricNameLength: DefaultMaxMetricNameLength,
 		},
+		GeoIP: GeoIPConfig{
+			Enabled:      DefaultGeoIPEnabled,
+			DatabasePath: DefaultGeoIPDatabasePath,
+		},
 	}
 }
 
@@ -128,4 +141,10 @@ func NewAuthConfig() *AuthConfig {
 // IsValid is for websocket authentication
 func (c *AuthConfig) IsValid() bool {
 	return c.SteamID != "" && c.UserID != ""
+}
+
+// GeoIPConfig represents the configuration for the GeoIP service.
+type GeoIPConfig struct {
+	Enabled      bool   `json:"enabled"`
+	DatabasePath string `json:"database_path"`
 }

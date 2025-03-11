@@ -188,7 +188,7 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 	state.RLock()
 	defer state.RUnlock()
 
-	metrics := types.MetricBatch{
+	metricsData := types.MetricBatch{
 		Metrics: []types.Metric{
 			{
 				Name:      "assetto_server_players",
@@ -204,6 +204,17 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 			{
 				Name:      "assetto_server_tick_rate",
 				Value:     state.TickRate,
+				Type:      types.Gauge,
+				Timestamp: time.Now(),
+				LabelValues: map[string]string{
+					"server_id":    state.ServerID,
+					"session_id":   state.CurrentSession.ID,
+					"session_type": state.CurrentSession.Type,
+				},
+			},
+			{
+				Name:      metrics.ServerUptime,
+				Value:     time.Since(state.StartTime).Seconds(),
 				Type:      types.Gauge,
 				Timestamp: time.Now(),
 				LabelValues: map[string]string{
@@ -326,7 +337,24 @@ func collectMetrics(state *types.ServerState) types.MetricBatch {
 		Time: time.Now(),
 	}
 
-	return metrics
+	// Ajouter les métriques de latence des joueurs
+	for steamID, player := range state.ConnectedPlayers {
+		metricsData.Metrics = append(metricsData.Metrics, types.Metric{
+			Name:      "assetto_server_player_latency_ms",
+			Value:     float64(player.Latency),
+			Type:      types.Gauge,
+			Timestamp: time.Now(),
+			LabelValues: map[string]string{
+				"server_id":    state.ServerID,
+				"session_id":   state.CurrentSession.ID,
+				"session_type": state.CurrentSession.Type,
+				"player_name":  player.Name,
+				"steam_id":     steamID,
+			},
+		})
+	}
+
+	return metricsData
 }
 
 // MonitorSystemResources monitors the system resource usage (CPU and Memory).
@@ -382,6 +410,14 @@ func updateMetrics(state *types.ServerState) {
 	}
 
 	metrics.PlayersGauge.With(baseLabels).Set(float64(state.Players))
+
+	// Set server state based on Ready flag
+	serverState := 0
+	if state.Ready {
+		serverState = 1
+	}
+	metrics.ServerStateGauge.With(baseLabels).Set(float64(serverState))
+
 	if state.CurrentSession != nil {
 		sessionLabels := map[string]string{
 			"server_id":    state.ServerID,
@@ -391,6 +427,14 @@ func updateMetrics(state *types.ServerState) {
 		}
 		metrics.SessionDurationGauge.With(sessionLabels).Set(time.Since(state.SessionStart).Seconds())
 	}
+
+	// Update server uptime
+	uptimeLabels := map[string]string{
+		"server_id":   state.ServerID,
+		"server_name": state.ServerName,
+		"server_type": state.ServerType,
+	}
+	metrics.ServerUpdateRateGauge.With(uptimeLabels).Set(time.Since(state.StartTime).Seconds())
 }
 
 // updateDetailedMetrics updates more detailed metrics
@@ -572,6 +616,13 @@ func MonitorSessionMetrics(ctx context.Context, vmClient *victoria.MetricsClient
 					{
 						Name:        metrics.SessionDuration,
 						Value:       sessionDuration,
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: sessionLabels,
+					},
+					{
+						Name:        metrics.ServerUptime,
+						Value:       time.Since(state.StartTime).Seconds(),
 						Type:        types.Gauge,
 						Timestamp:   time.Now(),
 						LabelValues: sessionLabels,

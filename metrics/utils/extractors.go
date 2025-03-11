@@ -246,3 +246,22 @@ func HashString(s string) string {
 	h.Write([]byte(s))
 	return fmt.Sprintf("%x", h.Sum(nil))[:8]
 }
+
+// ExtractIPAddress extracts the IP address from server output.
+func ExtractIPAddress(output string) string {
+	// Recherche d'une adresse IPv4
+	ipv4Regex := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+	matches := ipv4Regex.FindStringSubmatch(output)
+	if len(matches) > 0 {
+		return matches[0]
+	}
+
+	// Recherche d'une adresse IPv6
+	ipv6Regex := regexp.MustCompile(`\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b`)
+	matches = ipv6Regex.FindStringSubmatch(output)
+	if len(matches) > 0 {
+		return matches[0]
+	}
+
+	return ""
+}
