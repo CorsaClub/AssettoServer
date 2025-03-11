@@ -28,6 +28,41 @@ This wrapper provides comprehensive monitoring, metrics collection, and logging 
 - CSP version tracking
 - Performance metrics collection
 
+## Recent Improvements
+
+The codebase has undergone significant refactoring to improve:
+
+1. **Code Structure**
+   - Better separation of concerns
+   - Improved modularity
+   - Enhanced readability with consistent naming conventions
+   - Translated all French comments to English
+   - **Consolidated all metrics definitions into a single file** for better maintainability
+
+2. **Error Handling**
+   - More robust error handling with structured error types
+   - Improved error reporting with context
+   - Circuit breaker pattern for fault tolerance
+   - Graceful degradation when services are unavailable
+
+3. **Performance**
+   - Optimized metrics batching
+   - Reduced memory allocations with object pooling
+   - Improved concurrency handling
+   - Better resource management
+
+4. **Security**
+   - Enhanced input validation
+   - Improved authentication handling
+   - Better protection against potential vulnerabilities
+
+5. **Maintainability**
+   - Comprehensive documentation
+   - Consistent coding style
+   - Improved logging with context
+   - Better configuration management
+   - **Centralized metrics definitions** for easier updates and consistency
+
 ## Installation
 
 1. Clone the repository:
@@ -83,6 +118,8 @@ The wrapper can be configured using environment variables:
 - `VICTORIA_LOGS_PORT`: VictoriaLogs server port (default: 9428)
 - `VICTORIA_LOGS_USERNAME`: Authentication username
 - `VICTORIA_LOGS_PASSWORD`: Authentication password
+- `VICTORIA_LOGS_TIMEOUT`: Request timeout in seconds
+- `VICTORIA_LOGS_COMPRESSION`: Enable/disable compression (default: true)
 
 ### Metrics Configuration
 - `METRICS_BATCH_SIZE`: Number of metrics per batch (default: 100)

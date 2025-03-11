@@ -2,6 +2,7 @@
 package metrics
 
 import (
+	"metrics/types"
 	"time"
 )
 
@@ -30,11 +31,11 @@ func NewDebugMetrics(client *VictoriaMetricsClient) *DebugMetrics {
 // RecordEvent records a debug event
 func (d *DebugMetrics) RecordEvent(eventType string, labels map[string]string) {
 	d.client.SendMetrics(MetricBatch{
-		Metrics: []Metric{
+		Metrics: []types.Metric{
 			{
 				Name:        DebugEventTotal,
 				Value:       1,
-				Type:        Counter,
+				Type:        types.Counter,
 				Timestamp:   time.Now(),
 				LabelValues: labels,
 			},
@@ -46,11 +47,11 @@ func (d *DebugMetrics) RecordEvent(eventType string, labels map[string]string) {
 // RecordWarning records a debug warning
 func (d *DebugMetrics) RecordWarning(warningType string, labels map[string]string) {
 	d.client.SendMetrics(MetricBatch{
-		Metrics: []Metric{
+		Metrics: []types.Metric{
 			{
 				Name:        DebugWarningTotal,
 				Value:       1,
-				Type:        Counter,
+				Type:        types.Counter,
 				Timestamp:   time.Now(),
 				LabelValues: labels,
 			},
@@ -62,11 +63,11 @@ func (d *DebugMetrics) RecordWarning(warningType string, labels map[string]strin
 // RecordError records a debug error
 func (d *DebugMetrics) RecordError(errorType string, labels map[string]string) {
 	d.client.SendMetrics(MetricBatch{
-		Metrics: []Metric{
+		Metrics: []types.Metric{
 			{
 				Name:        DebugErrorTotal,
 				Value:       1,
-				Type:        Counter,
+				Type:        types.Counter,
 				Timestamp:   time.Now(),
 				LabelValues: labels,
 			},
@@ -78,11 +79,11 @@ func (d *DebugMetrics) RecordError(errorType string, labels map[string]string) {
 // RecordLatency records operation latency
 func (d *DebugMetrics) RecordLatency(operation string, duration time.Duration, labels map[string]string) {
 	d.client.SendMetrics(MetricBatch{
-		Metrics: []Metric{
+		Metrics: []types.Metric{
 			{
 				Name:        DebugLatencySeconds,
 				Value:       duration.Seconds(),
-				Type:        Gauge,
+				Type:        types.Gauge,
 				Timestamp:   time.Now(),
 				LabelValues: labels,
 			},
@@ -94,11 +95,11 @@ func (d *DebugMetrics) RecordLatency(operation string, duration time.Duration, l
 // RecordMemoryUsage records memory usage
 func (d *DebugMetrics) RecordMemoryUsage(bytes int64, labels map[string]string) {
 	d.client.SendMetrics(MetricBatch{
-		Metrics: []Metric{
+		Metrics: []types.Metric{
 			{
 				Name:        DebugMemoryBytes,
 				Value:       float64(bytes),
-				Type:        Gauge,
+				Type:        types.Gauge,
 				Timestamp:   time.Now(),
 				LabelValues: labels,
 			},
@@ -110,11 +111,11 @@ func (d *DebugMetrics) RecordMemoryUsage(bytes int64, labels map[string]string) 
 // RecordGoroutines records the number of goroutines
 func (d *DebugMetrics) RecordGoroutines(count int, labels map[string]string) {
 	d.client.SendMetrics(MetricBatch{
-		Metrics: []Metric{
+		Metrics: []types.Metric{
 			{
 				Name:        DebugGoroutines,
 				Value:       float64(count),
-				Type:        Gauge,
+				Type:        types.Gauge,
 				Timestamp:   time.Now(),
 				LabelValues: labels,
 			},

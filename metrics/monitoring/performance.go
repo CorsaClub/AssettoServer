@@ -6,14 +6,15 @@ import (
 	"sync"
 	"time"
 
-	metrics "metrics/services"
+	"metrics/metrics"
 	"metrics/types"
 	"metrics/utils"
+	"metrics/victoria"
 )
 
 type PerformanceMonitor struct {
 	state    *types.ServerState
-	vmClient *metrics.VictoriaMetricsClient
+	vmClient *victoria.MetricsClient
 	// Channels for asynchronous collection
 	perfUpdates chan perfMetrics
 
@@ -29,31 +30,31 @@ type perfMetrics struct {
 	tickTime float64
 }
 
-// NewPerformanceMonitor creates a new PerformanceMonitor instance
-func NewPerformanceMonitor(state *types.ServerState, vmClient *metrics.VictoriaMetricsClient) *PerformanceMonitor {
+// NewPerformanceMonitor creates a new performance monitor
+func NewPerformanceMonitor(state *types.ServerState, vmClient *victoria.MetricsClient) *PerformanceMonitor {
 	return &PerformanceMonitor{
 		state:         state,
 		vmClient:      vmClient,
 		perfUpdates:   make(chan perfMetrics, 100),
 		frameTimes:    make([]time.Duration, 0, 100),
 		lastFrameTime: time.Now(),
-		maxFrameTimes: 100, // Keep track of the last 100 frames
+		maxFrameTimes: 100,
 	}
 }
 
 // Start begins monitoring performance metrics
 func (pm *PerformanceMonitor) Start(ctx context.Context) {
-	// High frequency collection (every 100ms)
+	// Start the high-frequency metrics collection
 	go pm.collectHighFrequencyMetrics(ctx)
 
-	// Low frequency collection (every 5 seconds)
+	// Start the low-frequency metrics collection
 	go pm.collectLowFrequencyMetrics(ctx)
 
-	// Process metrics
+	// Start processing metrics
 	go pm.processMetrics(ctx)
 }
 
-// Collects high frequency metrics
+// collectHighFrequencyMetrics collects metrics that need to be sampled frequently
 func (pm *PerformanceMonitor) collectHighFrequencyMetrics(ctx context.Context) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -63,29 +64,30 @@ func (pm *PerformanceMonitor) collectHighFrequencyMetrics(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			start := time.Now()
-
-			// Record frame time
+			// Record frame time for FPS calculation
 			pm.recordFrameTime()
 
-			// Collect FPS and tick time metrics
-			metrics := perfMetrics{
-				fps:      pm.calculateFPS(),
-				tickTime: float64(time.Since(start).Microseconds()) / 1000.0,
+			// Calculate FPS
+			fps := pm.calculateFPS()
+
+			// Get tick time
+			tickTime := 0.0
+			if fps > 0 {
+				tickTime = 1000.0 / fps // in milliseconds
 			}
 
-			select {
-			case pm.perfUpdates <- metrics:
-			default:
-				utils.LogWarning("Performance metrics channel full, dropping update")
+			// Send metrics for processing
+			pm.perfUpdates <- perfMetrics{
+				fps:      fps,
+				tickTime: tickTime,
 			}
 		}
 	}
 }
 
-// Collects low frequency metrics
+// collectLowFrequencyMetrics collects metrics that don't need to be sampled as frequently
 func (pm *PerformanceMonitor) collectLowFrequencyMetrics(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -97,66 +99,49 @@ func (pm *PerformanceMonitor) collectLowFrequencyMetrics(ctx context.Context) {
 			var memStats runtime.MemStats
 			runtime.ReadMemStats(&memStats)
 
-			// Get CPU usage
-			cpuUsage, err := getProcessCPUUsage()
-			if err != nil {
-				utils.LogWarning("Failed to get CPU usage: %v", err)
-				cpuUsage = 0
-			}
-
-			// Create metrics batch
-			metricsData := metrics.MetricBatch{
-				Metrics: []metrics.Metric{
+			// Create a batch of metrics
+			metricsData := types.MetricBatch{
+				Metrics: []types.Metric{
 					{
-						Name:      metrics.ServerMemoryUsage,
+						Name:      metrics.ServerMemoryUsage.Name,
 						Value:     float64(memStats.HeapAlloc),
-						Type:      metrics.Gauge,
+						Type:      types.Gauge,
 						Timestamp: time.Now(),
 						LabelValues: map[string]string{
 							"server_id":   pm.state.ServerID,
 							"server_name": pm.state.ServerName,
 							"server_type": pm.state.ServerType,
-							"memory_type": "heap",
+							"memory_type": "heap_alloc",
 						},
 					},
 					{
-						Name:      metrics.ServerMemoryUsage,
+						Name:      metrics.ServerMemoryUsage.Name,
 						Value:     float64(memStats.StackInuse),
-						Type:      metrics.Gauge,
+						Type:      types.Gauge,
 						Timestamp: time.Now(),
 						LabelValues: map[string]string{
 							"server_id":   pm.state.ServerID,
 							"server_name": pm.state.ServerName,
 							"server_type": pm.state.ServerType,
-							"memory_type": "stack",
+							"memory_type": "stack_inuse",
 						},
 					},
 					{
-						Name:      metrics.ServerCPUUsage,
-						Value:     cpuUsage,
-						Type:      metrics.Gauge,
+						Name:      metrics.ServerMemoryUsage.Name,
+						Value:     float64(memStats.Sys),
+						Type:      types.Gauge,
 						Timestamp: time.Now(),
 						LabelValues: map[string]string{
 							"server_id":   pm.state.ServerID,
 							"server_name": pm.state.ServerName,
 							"server_type": pm.state.ServerType,
+							"memory_type": "system",
 						},
 					},
 					{
-						Name:      metrics.DebugGoroutines,
+						Name:      metrics.SystemGoRoutines.Name,
 						Value:     float64(runtime.NumGoroutine()),
-						Type:      metrics.Gauge,
-						Timestamp: time.Now(),
-						LabelValues: map[string]string{
-							"server_id":   pm.state.ServerID,
-							"server_name": pm.state.ServerName,
-							"server_type": pm.state.ServerType,
-						},
-					},
-					{
-						Name:      metrics.ServerUptime,
-						Value:     float64(time.Since(pm.state.StartTime).Seconds()),
-						Type:      metrics.Gauge,
+						Type:      types.Gauge,
 						Timestamp: time.Now(),
 						LabelValues: map[string]string{
 							"server_id":   pm.state.ServerID,
@@ -168,14 +153,14 @@ func (pm *PerformanceMonitor) collectLowFrequencyMetrics(ctx context.Context) {
 				Time: time.Now(),
 			}
 
-			// Add player metrics if available
+			// Add player-specific metrics
 			pm.state.RLock()
 			for _, player := range pm.state.ConnectedPlayers {
 				// Add player latency metric
-				metricsData.Metrics = append(metricsData.Metrics, metrics.Metric{
-					Name:      metrics.NetworkLatency,
+				metricsData.Metrics = append(metricsData.Metrics, types.Metric{
+					Name:      metrics.NetworkLatency.Name,
 					Value:     float64(player.Latency),
-					Type:      metrics.Gauge,
+					Type:      types.Gauge,
 					Timestamp: time.Now(),
 					LabelValues: map[string]string{
 						"server_id":   pm.state.ServerID,
@@ -187,10 +172,10 @@ func (pm *PerformanceMonitor) collectLowFrequencyMetrics(ctx context.Context) {
 				})
 
 				// Add player packet loss metric
-				metricsData.Metrics = append(metricsData.Metrics, metrics.Metric{
-					Name:      metrics.NetworkPacketLoss,
+				metricsData.Metrics = append(metricsData.Metrics, types.Metric{
+					Name:      metrics.NetworkPacketLoss.Name,
 					Value:     player.PacketLoss,
-					Type:      metrics.Gauge,
+					Type:      types.Gauge,
 					Timestamp: time.Now(),
 					LabelValues: map[string]string{
 						"server_id":   pm.state.ServerID,
@@ -203,46 +188,80 @@ func (pm *PerformanceMonitor) collectLowFrequencyMetrics(ctx context.Context) {
 			}
 			pm.state.RUnlock()
 
-			pm.vmClient.SendMetrics(metricsData)
+			// Send metrics to VictoriaMetrics
+			if err := pm.vmClient.SendMetrics(metricsData); err != nil {
+				utils.LogError("Failed to send performance metrics: %v", err)
+			}
 		}
 	}
 }
 
-// Processes metrics
+// processMetrics processes the collected metrics
 func (pm *PerformanceMonitor) processMetrics(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	// Buffers for calculating averages
+	var (
+		fpsValues      []float64
+		tickTimeValues []float64
+	)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case perfData := <-pm.perfUpdates:
-			// Envoyer les métriques à VictoriaMetrics
-			pm.vmClient.SendMetrics(metrics.MetricBatch{
-				Metrics: []metrics.Metric{
-					{
-						Name:      metrics.ServerFPS,
-						Value:     perfData.fps,
-						Type:      metrics.Gauge,
-						Timestamp: time.Now(),
-						LabelValues: map[string]string{
-							"server_id":   pm.state.ServerID,
-							"server_name": pm.state.ServerName,
-							"server_type": pm.state.ServerType,
-						},
-					},
-					{
-						Name:      metrics.ServerTickRate,
-						Value:     perfData.tickTime,
-						Type:      metrics.Gauge,
-						Timestamp: time.Now(),
-						LabelValues: map[string]string{
-							"server_id":    pm.state.ServerID,
-							"session_id":   pm.state.CurrentSession.ID,
-							"session_type": pm.state.CurrentSession.Type,
-						},
-					},
+		case metrics := <-pm.perfUpdates:
+			// Add values to buffers
+			fpsValues = append(fpsValues, metrics.fps)
+			tickTimeValues = append(tickTimeValues, metrics.tickTime)
+
+			// Limit buffer size
+			if len(fpsValues) > 10 {
+				fpsValues = fpsValues[1:]
+			}
+			if len(tickTimeValues) > 10 {
+				tickTimeValues = tickTimeValues[1:]
+			}
+		case <-ticker.C:
+			// Calculate averages
+			var avgFPS, avgTickTime float64
+			if len(fpsValues) > 0 {
+				for _, v := range fpsValues {
+					avgFPS += v
+				}
+				avgFPS /= float64(len(fpsValues))
+			}
+			if len(tickTimeValues) > 0 {
+				for _, v := range tickTimeValues {
+					avgTickTime += v
+				}
+				avgTickTime /= float64(len(tickTimeValues))
+			}
+
+			// Update server state
+			pm.state.Lock()
+			pm.state.TickRate = avgFPS
+			pm.state.Unlock()
+
+			// Create labels
+			labels := map[string]string{
+				"server_id":   pm.state.ServerID,
+				"server_name": pm.state.ServerName,
+				"server_type": pm.state.ServerType,
+			}
+
+			// Send metrics
+			batch := types.MetricBatch{
+				Metrics: []types.Metric{
+					metrics.TickRateGauge.With(labels).Set(avgFPS),
 				},
 				Time: time.Now(),
-			})
+			}
+
+			if err := pm.vmClient.SendMetrics(batch); err != nil {
+				utils.LogError("Failed to send tick rate metrics: %v", err)
+			}
 		}
 	}
 }
@@ -250,52 +269,41 @@ func (pm *PerformanceMonitor) processMetrics(ctx context.Context) {
 // recordFrameTime records the time between frames
 func (pm *PerformanceMonitor) recordFrameTime() {
 	now := time.Now()
+	pm.frameTimesMutex.Lock()
+	defer pm.frameTimesMutex.Unlock()
+
+	// Calculate time since last frame
 	frameTime := now.Sub(pm.lastFrameTime)
 	pm.lastFrameTime = now
 
-	// Only record reasonable frame times (between 1ms and 1s)
-	if frameTime >= time.Millisecond && frameTime <= time.Second {
-		pm.frameTimesMutex.Lock()
-		defer pm.frameTimesMutex.Unlock()
+	// Add to the slice
+	pm.frameTimes = append(pm.frameTimes, frameTime)
 
-		// Add the new frame time
-		pm.frameTimes = append(pm.frameTimes, frameTime)
-
-		// Keep only the most recent frame times
-		if len(pm.frameTimes) > pm.maxFrameTimes {
-			pm.frameTimes = pm.frameTimes[len(pm.frameTimes)-pm.maxFrameTimes:]
-		}
+	// Limit the size of the slice
+	if len(pm.frameTimes) > pm.maxFrameTimes {
+		pm.frameTimes = pm.frameTimes[1:]
 	}
 }
 
-// Calculates FPS based on the average frame time
+// calculateFPS calculates the current FPS based on recorded frame times
 func (pm *PerformanceMonitor) calculateFPS() float64 {
 	pm.frameTimesMutex.Lock()
 	defer pm.frameTimesMutex.Unlock()
 
-	// If we don't have enough frame times, fall back to tick rate
-	if len(pm.frameTimes) < 10 {
-		return pm.state.TickRate
+	if len(pm.frameTimes) == 0 {
+		return 0
 	}
 
-	// Calculate the average frame time
+	// Calculate average frame time
 	var totalTime time.Duration
-	for _, frameTime := range pm.frameTimes {
-		totalTime += frameTime
+	for _, t := range pm.frameTimes {
+		totalTime += t
 	}
-
 	avgFrameTime := totalTime / time.Duration(len(pm.frameTimes))
 
-	// Convert to FPS (frames per second)
+	// Calculate FPS
 	if avgFrameTime <= 0 {
-		return pm.state.TickRate // Fallback to tick rate if we have invalid data
+		return 0
 	}
-
-	fps := float64(time.Second) / float64(avgFrameTime)
-
-	// Apply some smoothing to avoid wild fluctuations
-	// Blend with the tick rate (80% new value, 20% tick rate)
-	smoothedFPS := (fps * 0.8) + (pm.state.TickRate * 0.2)
-
-	return smoothedFPS
+	return float64(time.Second) / float64(avgFrameTime)
 }

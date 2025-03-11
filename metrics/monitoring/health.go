@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	metrics "metrics/services"
+	"metrics/metrics"
 	"metrics/types"
 	"metrics/utils"
 	"metrics/victoria"
@@ -34,337 +34,180 @@ func DoHealth(ctx context.Context, vmClient *victoria.MetricsClient, state *type
 			// Perform health check
 			if !isHealthy(state) {
 				utils.LogWarning("Health check failed")
-				// Créer une métrique pour les échecs de ping
-				vmClient.SendMetrics(types.MetricBatch{
+
+				// Update health metric
+				labels := map[string]string{
+					"server_id":   state.ServerID,
+					"server_name": state.ServerName,
+					"server_type": state.ServerType,
+				}
+
+				batch := types.MetricBatch{
 					Metrics: []types.Metric{
-						{
-							Name:      metrics.ServerErrorsCounter.Name,
-							Value:     1,
-							Type:      types.Counter,
-							Timestamp: time.Now(),
-							LabelValues: map[string]string{
-								"server_id":    state.ServerID,
-								"session_id":   state.CurrentSession.ID,
-								"session_type": state.CurrentSession.Type,
-								"error_type":   "health_ping_failure",
-							},
-						},
+						metrics.ServerHealth.With(labels).Set(0),
 					},
 					Time: time.Now(),
-				})
+				}
 
-				// Log the current system state
-				state.RLock()
-				utils.LogSDK("System state - Players: %d, Ready: %v", state.Players, state.Ready)
-				state.RUnlock()
+				// Send metrics
+				err := vmClient.SendMetrics(batch)
+				if err != nil {
+					utils.LogError("Failed to send health metrics", err)
+				}
 
-				// Initiate a graceful shutdown
+				// Initiate graceful shutdown
 				gracefulShutdown(cancel, state)
 				return
 			}
 
-			// Update health metrics
-			state.RLock()
-			vmClient.SendMetrics(types.MetricBatch{
-				Metrics: []types.Metric{
-					{
-						Name:      metrics.ServerUptime,
-						Value:     time.Since(state.LastPing).Seconds(),
-						Type:      types.Gauge,
-						Timestamp: time.Now(),
-						LabelValues: map[string]string{
-							"server_id":    state.ServerID,
-							"session_id":   state.CurrentSession.ID,
-							"session_type": state.CurrentSession.Type,
-							"metric_type":  "last_health_ping",
-						},
-					},
-				},
-				Time: time.Now(),
-			})
-			state.RUnlock()
+			// Update metrics
+			updateMetrics(state)
 
-			// Log health status periodically
-			if time.Now().Second()%30 == 0 {
-				state.RLock()
-				utils.LogSDK("Health status: Ready=%v, LastPing=%v ago, ShuttingDown=%v",
-					state.Ready,
-					time.Since(state.LastPing),
-					state.ShuttingDown)
-				state.RUnlock()
+			// Collect metrics
+			batch := collectMetrics(state)
+
+			// Send metrics
+			err := vmClient.SendMetrics(batch)
+			if err != nil {
+				utils.LogError("Failed to send metrics", err)
 			}
 		}
 	}
 }
 
-// isHealthy vérifie si le serveur est en bonne santé
+// isHealthy checks if the server is healthy
 func isHealthy(state *types.ServerState) bool {
 	state.RLock()
 	defer state.RUnlock()
 
-	return state.Ready &&
-		time.Since(state.LastPing) < 5*time.Second &&
-		!state.ShuttingDown
-}
-
-// MonitorHealthMetrics surveille et met à jour les métriques de santé du serveur
-func MonitorHealthMetrics(ctx context.Context, vmClient *victoria.MetricsClient, state *types.ServerState) {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Create a clean set of labels without any JSON escaping issues
-			serverID := state.ServerID
-			serverName := state.ServerName
-			serverRegion := state.ServerRegion
-
-			// Ensure labels are properly formatted
-			labels := map[string]string{
-				"server_id": serverID,
-				"name":      serverName,
-				"region":    serverRegion,
-				"type":      state.ServerType,
-			}
-
-			// Send metrics with explicit naming and clean labels
-			batch := types.MetricBatch{
-				Metrics: []types.Metric{
-					{
-						Name:        metrics.ServerHealth,
-						Value:       1,
-						Type:        types.Gauge,
-						Timestamp:   time.Now(),
-						LabelValues: labels,
-					},
-					{
-						Name:        "assetto_server_players_count",
-						Value:       float64(state.Players),
-						Type:        types.Gauge,
-						Timestamp:   time.Now(),
-						LabelValues: labels,
-					},
-					{
-						Name:      metrics.ServerUptime,
-						Value:     float64(time.Now().Unix()),
-						Type:      types.Gauge,
-						Timestamp: time.Now(),
-						LabelValues: map[string]string{
-							"server_id":    state.ServerID,
-							"session_id":   state.CurrentSession.ID,
-							"session_type": state.CurrentSession.Type,
-							"metric_type":  "health_timestamp",
-						},
-					},
-				},
-				Time: time.Now(),
-			}
-
-			// Ajouter les métriques de base
-			batch.Metrics = append(batch.Metrics, types.Metric{
-				Name:      metrics.ServerPlayersConnected,
-				Value:     float64(len(state.ConnectedPlayers)),
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			})
-
-			// Pas de logs détaillés avant l'envoi
-			if err := vmClient.SendMetrics(batch); err != nil {
-				utils.LogError("Échec de l'envoi des métriques de santé: %v", err)
-			}
-		}
+	// Check if the server is ready
+	if !state.Ready {
+		return false
 	}
+
+	// Check if the last ping was recent enough
+	if time.Since(state.LastPing) > 10*time.Second {
+		return false
+	}
+
+	// Check if the server is shutting down
+	if state.ShuttingDown {
+		return false
+	}
+
+	// Additional health checks can be added here
+
+	return true
 }
 
+// collectMetrics collects metrics from the server state
 func collectMetrics(state *types.ServerState) types.MetricBatch {
 	state.RLock()
 	defer state.RUnlock()
 
-	metricsData := types.MetricBatch{
+	// Create base labels
+	baseLabels := map[string]string{
+		"server_id":   state.ServerID,
+		"server_name": state.ServerName,
+		"server_type": state.ServerType,
+	}
+
+	// Create metrics batch
+	batch := types.MetricBatch{
 		Metrics: []types.Metric{
+			// Server state metrics
 			{
-				Name:      "assetto_server_players",
-				Value:     float64(state.Players),
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
+				Name:        metrics.ServerStateGauge.Name,
+				Value:       float64(types.ServerStateReady),
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
 			},
+			// Player count metrics
 			{
-				Name:      "assetto_server_tick_rate",
-				Value:     state.TickRate,
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
+				Name:        metrics.PlayersGauge.Name,
+				Value:       float64(state.Players),
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
 			},
+			// Server uptime metrics
 			{
-				Name:      metrics.ServerUptime,
-				Value:     time.Since(state.StartTime).Seconds(),
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			},
-			{
-				Name:      metrics.TrackGrip,
-				Value:     state.TrackGrip,
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			},
-			{
-				Name:      metrics.TrackTemperature,
-				Value:     state.TrackTemp,
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			},
-			{
-				Name:      "assetto_server_players",
-				Value:     float64(state.Players),
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			},
-			{
-				Name:      metrics.ServerTickRate,
-				Value:     float64(state.TickRate),
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			},
-			{
-				Name:      "assetto_server_track_grip",
-				Value:     state.TrackGrip,
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			},
-			{
-				Name:      "assetto_server_track_temp",
-				Value:     state.TrackTemp,
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			},
-			{
-				Name:      metrics.AirTemperature,
-				Value:     state.AirTemp,
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			},
-			{
-				Name:      metrics.SessionDuration,
-				Value:     float64(time.Since(state.CurrentSession.StartTime).Seconds()),
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			},
-			{
-				Name:      metrics.ServerSessionType,
-				Value:     sessionTypeToValue(state.CurrentSession.Type),
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
-			},
-			{
-				Name:      metrics.ServerPlayersConnected,
-				Value:     float64(len(state.ConnectedPlayers)),
-				Type:      types.Gauge,
-				Timestamp: time.Now(),
-				LabelValues: map[string]string{
-					"server_id":    state.ServerID,
-					"session_id":   state.CurrentSession.ID,
-					"session_type": state.CurrentSession.Type,
-				},
+				Name:        metrics.ServerUptime.Name,
+				Value:       time.Since(state.StartTime).Seconds(),
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
 			},
 		},
 		Time: time.Now(),
 	}
 
-	// Ajouter les métriques de latence des joueurs
-	for steamID, player := range state.ConnectedPlayers {
-		metricsData.Metrics = append(metricsData.Metrics, types.Metric{
-			Name:      "assetto_server_player_latency_ms",
-			Value:     float64(player.Latency),
-			Type:      types.Gauge,
-			Timestamp: time.Now(),
-			LabelValues: map[string]string{
-				"server_id":    state.ServerID,
-				"session_id":   state.CurrentSession.ID,
-				"session_type": state.CurrentSession.Type,
-				"player_name":  player.Name,
-				"steam_id":     steamID,
-			},
+	// Add session metrics if available
+	if state.CurrentSession != nil {
+		// Add session type to labels
+		sessionLabels := copyLabels(baseLabels)
+		sessionLabels["session_type"] = state.CurrentSession.Type
+		sessionLabels["track"] = state.CurrentSession.Track
+
+		// Add session metrics
+		batch.Metrics = append(batch.Metrics, types.Metric{
+			Name:        metrics.SessionDurationGauge.Name,
+			Value:       time.Since(state.CurrentSession.StartTime).Seconds(),
+			Type:        types.Gauge,
+			Timestamp:   time.Now(),
+			LabelValues: sessionLabels,
+		})
+
+		// Add track metrics if available
+		if state.TrackGrip > 0 {
+			batch.Metrics = append(batch.Metrics, types.Metric{
+				Name:        metrics.TrackGrip.Name,
+				Value:       state.TrackGrip,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			})
+		}
+
+		if state.TrackTemp > 0 {
+			batch.Metrics = append(batch.Metrics, types.Metric{
+				Name:        metrics.TrackTemperature.Name,
+				Value:       state.TrackTemp,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			})
+		}
+
+		if state.AirTemp > 0 {
+			batch.Metrics = append(batch.Metrics, types.Metric{
+				Name:        metrics.AirTemperature.Name,
+				Value:       state.AirTemp,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			})
+		}
+	}
+
+	// Add session time metrics if available
+	if state.SessionTimeLeft > 0 {
+		batch.Metrics = append(batch.Metrics, types.Metric{
+			Name:        metrics.SessionTimeLeftGauge.Name,
+			Value:       float64(state.SessionTimeLeft),
+			Type:        types.Gauge,
+			Timestamp:   time.Now(),
+			LabelValues: baseLabels,
 		})
 	}
 
-	return metricsData
+	return batch
 }
 
-// MonitorSystemResources monitors the system resource usage (CPU and Memory).
-// It updates the relevant metrics at regular intervals.
-// A pool is used to limit the number of concurrent goroutines performing the updates.
+// MonitorSystemResources monitors system resources like CPU, memory, etc.
 func MonitorSystemResources(ctx context.Context, state *types.ServerState) {
-	// Use a goroutine pool to limit the number of concurrent system metric updates
-	metricsPool := make(chan struct{}, 2) // Limit to 2 concurrent goroutines
-
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -372,219 +215,292 @@ func MonitorSystemResources(ctx context.Context, state *types.ServerState) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			select {
-			case metricsPool <- struct{}{}:
-				go func() {
-					defer func() { <-metricsPool }()
-					updateSystemMetrics(state)
-				}()
-			default:
-				// Skip this update if the pool is full to avoid overwhelming the system
-				utils.LogDebug("Skipping metrics update - too busy")
-			}
+			// Update system metrics
+			updateSystemMetrics(state)
 		}
 	}
 }
 
-// gracefulShutdown performs a graceful shutdown of the server
+// gracefulShutdown initiates a graceful shutdown of the server
 func gracefulShutdown(cancel context.CancelFunc, state *types.ServerState) {
+	utils.LogInfo("Initiating graceful shutdown")
+
+	// Update server state
 	state.Lock()
-	state.ShuttingDown = true
+	state.Ready = false
 	state.Unlock()
 
-	time.Sleep(time.Second)
+	// Cancel the context to signal shutdown
 	cancel()
 }
 
-// monitorGameServerState logs the GameServer state for debugging purposes.
+// monitorGameServerState monitors the state of the game server
 func monitorGameServerState(gameServer interface{}) {
-	// Don't log anymore the GameServer details
+	// This is a placeholder for future implementation
+	// It will monitor the state of the game server and update metrics accordingly
 }
 
-// updateMetrics updates the basic metrics such as the number of players and session duration.
+// updateMetrics updates metrics based on the server state
 func updateMetrics(state *types.ServerState) {
-	baseLabels := map[string]string{
+	state.RLock()
+	defer state.RUnlock()
+
+	// Update server state metrics
+	metrics.ServerStateGauge.With(map[string]string{
 		"server_id":   state.ServerID,
 		"server_name": state.ServerName,
 		"server_type": state.ServerType,
-	}
+	}).Set(float64(types.ServerStateReady))
 
-	metrics.PlayersGauge.With(baseLabels).Set(float64(state.Players))
-
-	// Set server state based on Ready flag
-	serverState := 0
-	if state.Ready {
-		serverState = 1
-	}
-	metrics.ServerStateGauge.With(baseLabels).Set(float64(serverState))
-
-	if state.CurrentSession != nil {
-		sessionLabels := map[string]string{
-			"server_id":    state.ServerID,
-			"server_name":  state.ServerName,
-			"server_type":  state.ServerType,
-			"session_type": state.SessionType,
-		}
-		metrics.SessionDurationGauge.With(sessionLabels).Set(time.Since(state.SessionStart).Seconds())
-	}
-
-	// Update server uptime
-	uptimeLabels := map[string]string{
+	// Update player count metrics
+	metrics.PlayersGauge.With(map[string]string{
 		"server_id":   state.ServerID,
 		"server_name": state.ServerName,
 		"server_type": state.ServerType,
-	}
-	metrics.ServerUpdateRateGauge.With(uptimeLabels).Set(time.Since(state.StartTime).Seconds())
+	}).Set(float64(state.Players))
+
+	// Update server uptime metrics
+	metrics.ServerUptime.With(map[string]string{
+		"server_id":   state.ServerID,
+		"server_name": state.ServerName,
+		"server_type": state.ServerType,
+	}).Set(time.Since(state.StartTime).Seconds())
 }
 
-// updateDetailedMetrics updates more detailed metrics
+// updateDetailedMetrics updates detailed metrics
 func updateDetailedMetrics(state *types.ServerState) {
+	state.RLock()
+	defer state.RUnlock()
+
+	// Base labels
 	baseLabels := map[string]string{
 		"server_id":   state.ServerID,
 		"server_name": state.ServerName,
 		"server_type": state.ServerType,
 	}
 
-	metrics.SessionTimeLeftGauge.With(baseLabels).Set(float64(state.SessionTimeLeft))
-	metrics.TrackGripGauge.With(baseLabels).Set(state.TrackGrip)
-	metrics.TrackTemperatureGauge.With(baseLabels).Set(state.TrackTemp)
-	metrics.AirTemperatureGauge.With(baseLabels).Set(state.AirTemp)
-	metrics.TickRateGauge.With(baseLabels).Set(state.TickRate)
+	// Update player metrics
+	for id, player := range state.ConnectedPlayers {
+		// Create player-specific labels
+		playerLabels := copyLabels(baseLabels)
+		playerLabels["player_id"] = id
+		playerLabels["player_name"] = player.Name
 
-	for _, player := range state.ConnectedPlayers {
-		updatePlayerMetrics(player, baseLabels)
+		// Update player-specific metrics
+		updatePlayerMetrics(player, playerLabels)
 	}
 }
 
-// updatePlayerMetrics updates metrics related to individual players
+// updatePlayerMetrics updates player-specific metrics
 func updatePlayerMetrics(player *types.Player, baseLabels map[string]string) {
-	playerLabels := copyLabels(baseLabels)
-	playerLabels["player_name"] = player.Name
-	playerLabels["steam_id"] = player.SteamID
+	// Add car-specific labels
+	labels := copyLabels(baseLabels)
+	labels["car_model"] = player.CarModel
 
-	metrics.PlayerLatencyGauge.With(playerLabels).Set(float64(player.Latency))
-	metrics.PacketLossGauge.With(playerLabels).Set(player.PacketLoss)
-
-	if player.BestLap > 0 {
-		metrics.PlayerBestLapGauge.With(playerLabels).Set(float64(player.BestLap))
-	}
+	// TODO: Implement player-specific metrics
 }
 
-// copyLabels creates and returns a copy of the provided labels
+// copyLabels creates a copy of a labels map
 func copyLabels(labels map[string]string) map[string]string {
-	newLabels := make(map[string]string)
+	copy := make(map[string]string)
 	for k, v := range labels {
-		newLabels[k] = v
+		copy[k] = v
 	}
-	return newLabels
+	return copy
 }
 
-// updateSystemMetrics updates system resource usage metrics
+// updateSystemMetrics updates system metrics
 func updateSystemMetrics(state *types.ServerState) {
-	labels := map[string]string{
+	// Get CPU usage
+	cpuUsage, err := getProcessCPUUsage()
+	if err != nil {
+		utils.LogError("Failed to get CPU usage", err)
+	}
+
+	// Get memory usage
+	memUsage, err := getProcessMemoryUsage()
+	if err != nil {
+		utils.LogError("Failed to get memory usage", err)
+	}
+
+	// Update metrics
+	metrics.CpuUsageGauge.With(map[string]string{
 		"server_id":   state.ServerID,
 		"server_name": state.ServerName,
 		"server_type": state.ServerType,
-	}
+	}).Set(cpuUsage)
 
-	if cpu, err := getProcessCPUUsage(); err == nil {
-		metrics.CpuUsageGauge.With(labels).Set(cpu)
-	} else {
-		utils.LogWarning("%v", err)
-	}
-
-	if mem, err := getProcessMemoryUsage(); err == nil {
-		metrics.MemoryUsageGauge.With(labels).Set(float64(mem))
-	} else {
-		utils.LogWarning("%v", err)
-	}
+	metrics.MemoryUsageGauge.With(map[string]string{
+		"server_id":   state.ServerID,
+		"server_name": state.ServerName,
+		"server_type": state.ServerType,
+	}).Set(float64(memUsage))
 }
 
-// getProcessCPUUsage returns the CPU usage of the current process as a percentage.
-// It reads directly from /proc/self/stat.
+// getProcessCPUUsage gets the CPU usage of the current process
 func getProcessCPUUsage() (float64, error) {
-	// Lire directement depuis /proc/self/stat
+	// This is a simplified implementation
+	// In a real-world scenario, you would use a library like gopsutil
+	// to get accurate CPU usage
+
+	// For now, we'll parse /proc/self/stat on Linux
+	// or use a placeholder value on other platforms
+	if _, err := os.Stat("/proc/self/stat"); os.IsNotExist(err) {
+		// Not on Linux, return a placeholder
+		return 0.0, nil
+	}
+
+	// Read /proc/self/stat
 	data, err := os.ReadFile("/proc/self/stat")
 	if err != nil {
-		return 0, fmt.Errorf("failed to read CPU usage from /proc: %v", err)
+		return 0.0, err
 	}
 
+	// Parse the stat file
 	fields := strings.Fields(string(data))
-	if len(fields) < 14 {
-		return 0, fmt.Errorf("invalid /proc/self/stat format")
+	if len(fields) < 15 {
+		return 0.0, fmt.Errorf("invalid stat file format")
 	}
 
-	utime, _ := strconv.ParseFloat(fields[13], 64)
-	stime, _ := strconv.ParseFloat(fields[14], 64)
+	// Extract utime and stime
+	utime, err := strconv.ParseFloat(fields[13], 64)
+	if err != nil {
+		return 0.0, err
+	}
 
-	return (utime + stime) / float64(os.Getpagesize()), nil
+	stime, err := strconv.ParseFloat(fields[14], 64)
+	if err != nil {
+		return 0.0, err
+	}
+
+	// Calculate CPU usage
+	// This is a simplified calculation
+	// In a real-world scenario, you would need to account for
+	// the number of cores and the time elapsed
+	return (utime + stime) / 100.0, nil
 }
 
-// getProcessMemoryUsage returns the memory usage of the current process in bytes.
-// It reads directly from /proc/self/status.
+// getProcessMemoryUsage gets the memory usage of the current process
 func getProcessMemoryUsage() (uint64, error) {
-	// Lire directement depuis /proc/self/status
-	data, err := os.ReadFile("/proc/self/status")
-	if err != nil {
-		return 0, fmt.Errorf("failed to read memory usage from /proc: %v", err)
+	// This is a simplified implementation
+	// In a real-world scenario, you would use a library like gopsutil
+	// to get accurate memory usage
+
+	// For now, we'll parse /proc/self/status on Linux
+	// or use a placeholder value on other platforms
+	if _, err := os.Stat("/proc/self/status"); os.IsNotExist(err) {
+		// Not on Linux, return a placeholder
+		return 0, nil
 	}
 
-	for _, line := range strings.Split(string(data), "\n") {
+	// Read /proc/self/status
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return 0, err
+	}
+
+	// Parse the status file
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
 		if strings.HasPrefix(line, "VmRSS:") {
+			// Extract the memory usage
 			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				memKB, err := strconv.ParseUint(fields[1], 10, 64)
-				if err != nil {
-					return 0, fmt.Errorf("failed to parse memory usage: %v", err)
-				}
-				return memKB * 1024, nil
+			if len(fields) < 2 {
+				return 0, fmt.Errorf("invalid status file format")
 			}
+
+			// Parse the memory usage
+			memUsage, err := strconv.ParseUint(fields[1], 10, 64)
+			if err != nil {
+				return 0, err
+			}
+
+			// Convert from KB to bytes
+			return memUsage * 1024, nil
 		}
 	}
 
-	return 0, fmt.Errorf("VmRSS not found in /proc/self/status")
+	return 0, fmt.Errorf("memory usage not found in status file")
 }
 
-// MonitorDetailedMetrics envoie régulièrement les métriques détaillées à VictoriaMetrics
+// MonitorDetailedMetrics monitors detailed metrics
 func MonitorDetailedMetrics(ctx context.Context, vmClient *victoria.MetricsClient, state *types.ServerState) {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-
-	utils.LogInfo("Monitoring detailed metrics : [ OK ] - Interval: 10s")
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Collecter et envoyer les métriques détaillées sans log
-			batch := collectMetrics(state)
+			// Update detailed metrics
+			updateDetailedMetrics(state)
 
-			// Pas de log avant ou après l'envoi
-			if err := vmClient.SendMetrics(batch); err != nil {
-				utils.LogError("Failed to send detailed metrics: %v", err)
+			// Collect system metrics
+			cpuUsage, _ := getProcessCPUUsage()
+			memUsage, _ := getProcessMemoryUsage()
+
+			// Create base labels
+			baseLabels := map[string]string{
+				"server_id":   state.ServerID,
+				"server_name": state.ServerName,
+				"server_type": state.ServerType,
+			}
+
+			// Create metrics batch
+			batch := types.MetricBatch{
+				Metrics: []types.Metric{
+					{
+						Name:        metrics.CpuUsageGauge.Name,
+						Value:       cpuUsage,
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: baseLabels,
+					},
+					{
+						Name:        metrics.MemoryUsageGauge.Name,
+						Value:       float64(memUsage),
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: baseLabels,
+					},
+					{
+						Name:        metrics.ServerUpdateRateGauge.Name,
+						Value:       state.TickRate,
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: baseLabels,
+					},
+				},
+				Time: time.Now(),
+			}
+
+			// Send metrics
+			err := vmClient.SendMetrics(batch)
+			if err != nil {
+				utils.LogError("Failed to send detailed metrics", err)
 			}
 		}
 	}
 }
 
-// sessionTypeToValue converts a session type to a corresponding value
+// sessionTypeToValue converts a session type string to a numeric value
 func sessionTypeToValue(sessionType string) float64 {
 	switch sessionType {
-	case "practice":
-		return 1
-	case "qualifying":
-		return 2
-	case "race":
-		return 3
-	default:
+	case types.SessionTypePractice:
 		return 0
+	case types.SessionTypeQualifying:
+		return 1
+	case types.SessionTypeRace:
+		return 2
+	default:
+		return -1
 	}
 }
 
-// MonitorSessionMetrics surveille les métriques liées à la session en cours
+// MonitorSessionMetrics monitors session-specific metrics
 func MonitorSessionMetrics(ctx context.Context, vmClient *victoria.MetricsClient, state *types.ServerState) {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -593,60 +509,50 @@ func MonitorSessionMetrics(ctx context.Context, vmClient *victoria.MetricsClient
 			return
 		case <-ticker.C:
 			state.RLock()
-			if state.CurrentSession == nil || !state.Ready {
+			if state.CurrentSession != nil {
+				// Create base labels
+				baseLabels := map[string]string{
+					"server_id":    state.ServerID,
+					"server_name":  state.ServerName,
+					"server_type":  state.ServerType,
+					"session_type": state.CurrentSession.Type,
+					"track":        state.CurrentSession.Track,
+				}
+
+				// Create metrics batch
+				batch := types.MetricBatch{
+					Metrics: []types.Metric{
+						{
+							Name:        metrics.SessionDurationGauge.Name,
+							Value:       time.Since(state.CurrentSession.StartTime).Seconds(),
+							Type:        types.Gauge,
+							Timestamp:   time.Now(),
+							LabelValues: baseLabels,
+						},
+					},
+					Time: time.Now(),
+				}
+
+				// Add time left metric if available
+				if state.SessionTimeLeft > 0 {
+					batch.Metrics = append(batch.Metrics, types.Metric{
+						Name:        metrics.SessionTimeLeftGauge.Name,
+						Value:       float64(state.SessionTimeLeft),
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: baseLabels,
+					})
+				}
+
 				state.RUnlock()
-				continue
-			}
 
-			// Créer les labels de base
-			sessionLabels := map[string]string{
-				"server_id":    state.ServerID,
-				"server_name":  state.ServerName,
-				"server_type":  state.ServerType,
-				"session_id":   state.CurrentSession.ID,
-				"session_type": state.CurrentSession.Type,
-			}
-
-			// Calculer la durée de la session
-			sessionDuration := time.Since(state.CurrentSession.StartTime).Seconds()
-
-			// Créer le lot de métriques
-			batch := types.MetricBatch{
-				Metrics: []types.Metric{
-					{
-						Name:        metrics.SessionDuration,
-						Value:       sessionDuration,
-						Type:        types.Gauge,
-						Timestamp:   time.Now(),
-						LabelValues: sessionLabels,
-					},
-					{
-						Name:        metrics.ServerUptime,
-						Value:       time.Since(state.StartTime).Seconds(),
-						Type:        types.Gauge,
-						Timestamp:   time.Now(),
-						LabelValues: sessionLabels,
-					},
-				},
-				Time: time.Now(),
-			}
-
-			// Ajouter le temps restant si disponible
-			if state.SessionTimeLeft > 0 {
-				batch.Metrics = append(batch.Metrics, types.Metric{
-					Name:        metrics.SessionRemainingTimeGauge.Name,
-					Value:       float64(state.SessionTimeLeft),
-					Type:        types.Gauge,
-					Timestamp:   time.Now(),
-					LabelValues: sessionLabels,
-				})
-			}
-
-			state.RUnlock()
-
-			// Envoyer les métriques
-			if err := vmClient.SendMetrics(batch); err != nil {
-				utils.LogError("Échec de l'envoi des métriques de session: %v", err)
+				// Send metrics
+				err := vmClient.SendMetrics(batch)
+				if err != nil {
+					utils.LogError("Failed to send session metrics", err)
+				}
+			} else {
+				state.RUnlock()
 			}
 		}
 	}

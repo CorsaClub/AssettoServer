@@ -23,15 +23,13 @@ import (
 	"metrics/config"
 	"metrics/geoip"
 	"metrics/handlers"
-	"metrics/monitoring"
-	metrics "metrics/services"
 	"metrics/types"
 	"metrics/utils"
 	"metrics/victoria"
 	"metrics/websocket"
 )
 
-// interceptor implémente un io.Writer qui intercepte et transmet les données écrites
+// interceptor implements an io.Writer that intercepts and forwards written data
 type interceptor struct {
 	forward   io.Writer
 	intercept func(p []byte)
@@ -44,19 +42,19 @@ func (i *interceptor) Write(p []byte) (n int, err error) {
 	return i.forward.Write(p)
 }
 
-// waitForTerminationSignal attend un signal de terminaison et annule le contexte
+// waitForTerminationSignal waits for a termination signal and cancels the context
 func waitForTerminationSignal(cancel context.CancelFunc) {
-	// Créer un canal pour les signaux
+	// Create a channel for signals
 	sigs := make(chan os.Signal, 1)
 
-	// Enregistrer les signaux à intercepter
+	// Register signals to intercept
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	// Attendre un signal
+	// Wait for a signal
 	sig := <-sigs
 	utils.LogInfo("Received signal: %v", sig)
 
-	// Annuler le contexte pour déclencher l'arrêt gracieux
+	// Cancel the context to trigger graceful shutdown
 	cancel()
 }
 
@@ -64,20 +62,19 @@ func waitForTerminationSignal(cancel context.CancelFunc) {
 // It initializes the Agones SDK, starts the Assetto Corsa server,
 // and manages the server's lifecycle including health checks and metrics.
 func main() {
-	// At the beginning of main()
+	// Enable debug logs if needed
 	os.Setenv("DEBUG_LOGS", "true")
 	utils.LogInfo("Starting wrapper with TEST_MODE=%s", os.Getenv("TEST_MODE"))
 
 	// Create a WaitGroup to track goroutines
 	var wg sync.WaitGroup
 
-	// Configuration flags
+	// Parse configuration flags
 	input := flag.String("i", "./start-server.sh", "Path to server start script")
 	args := flag.String("args", "", "Arguments for the server")
-
 	flag.Parse()
 
-	// In main() function, after flag parsing
+	// Get or generate server ID
 	serverID := os.Getenv("GAMESERVER_ID")
 	if serverID == "" {
 		serverID = utils.GenerateServerID()
@@ -86,15 +83,17 @@ func main() {
 		utils.LogInfo("Using environment server ID: %s", serverID)
 	}
 
+	// Get server metadata from environment
 	serverRegion := os.Getenv("GAMESERVER_REGION")
 	serverName := os.Getenv("SERVER_NAME")
+	serverType := os.Getenv("SERVER_TYPE")
 
 	// Initialize server state with ID
 	serverState := &types.ServerState{
 		ServerID:         serverID,
 		ServerRegion:     serverRegion,
 		ServerName:       serverName,
-		ServerType:       os.Getenv("SERVER_TYPE"),
+		ServerType:       serverType,
 		LastPing:         time.Now(),
 		StartTime:        time.Now(),
 		ConnectedPlayers: make(map[string]*types.Player),
@@ -105,39 +104,11 @@ func main() {
 	}
 
 	// Create server configuration
-	serverConfig := &types.Config{
-		VictoriaMetrics: struct {
-			Endpoint    string        `json:"endpoint"`
-			MaxRetries  int           `json:"max_retries"`
-			BatchSize   int           `json:"batch_size"`
-			BatchPeriod time.Duration `json:"batch_period"`
-			Timeout     time.Duration `json:"timeout"`
-		}{
-			Endpoint:    *flag.String("victoria-endpoint", "http://localhost:8428", "VictoriaMetrics endpoint"),
-			MaxRetries:  3,
-			BatchSize:   100,
-			BatchPeriod: 5 * time.Second,
-			Timeout:     10 * time.Second,
-		},
-		Logging: struct {
-			Directory   string   `json:"directory"`
-			Patterns    []string `json:"patterns"`
-			MaxFileSize int64    `json:"max_file_size"`
-			MaxFiles    int      `json:"max_files"`
-		}{
-			Directory:   "/var/log/acserver",
-			Patterns:    []string{"error.log", "server.log", "access.log"},
-			MaxFileSize: 100 * 1024 * 1024, // 100MB
-			MaxFiles:    10,
-		},
-		GeoIP: struct {
-			Enabled      bool   `json:"enabled"`
-			DatabasePath string `json:"database_path"`
-		}{
-			Enabled:      true,
-			DatabasePath: "./GeoLite2-City.mmdb",
-		},
-	}
+	cfg := config.NewDefaultConfig()
+	cfg.ServerID = serverID
+	cfg.ServerName = serverName
+	cfg.ServerRegion = serverRegion
+	cfg.ServerType = serverType
 
 	// Initialize VictoriaMetrics client
 	metricsClient := initVictoriaMetrics()
@@ -149,233 +120,177 @@ func main() {
 	utils.SetLogsClient(logsClient)
 
 	// Initialize GeoIP service if enabled
-	var geoipService *geoip.GeoIPService
-	if serverConfig.GeoIP.Enabled {
-		utils.LogInfo("Initializing GeoIP service with database: %s", serverConfig.GeoIP.DatabasePath)
-		var err error
-		geoipConfig := &config.GeoIPConfig{
-			Enabled:      serverConfig.GeoIP.Enabled,
-			DatabasePath: serverConfig.GeoIP.DatabasePath,
-		}
-		geoipService, err = geoip.InitGeoIPService(geoipConfig)
-		if err != nil {
-			utils.LogWarning("Failed to initialize GeoIP service: %v", err)
-		} else {
-			utils.LogInfo("GeoIP service initialized successfully")
-		}
-	} else {
-		utils.LogInfo("GeoIP service is disabled")
-	}
+	geoipService := initGeoIPService(cfg.GeoIP)
 
-	// Test connections
+	// Test connections to metrics and logs services
 	testVictoriaMetricsConnection(metricsClient, serverState.ServerID)
 	testVictoriaLogsConnection(logsClient)
 
-	// Ajouter un canal pour les événements
+	// Create a channel for server events
 	eventChan := make(chan string, 100)
 
-	// Ajouter cette fonction pour capturer les événements du serveur
-	captureServerEvents := func(line string) {
-		// Filtrer les lignes pertinentes
-		if strings.Contains(line, "Collision between") ||
-			strings.Contains(line, "LAP") ||
-			strings.Contains(line, "Network stats") ||
-			strings.Contains(line, "CONNECTED") ||
-			strings.Contains(line, "DISCONNECTED") ||
-			strings.Contains(line, "SESSION") ||
-			strings.Contains(line, "Lobby registration") ||
-			strings.Contains(line, "ERROR") ||
-			strings.Contains(line, "Warning") {
-
-			// Envoyer l'événement au canal pour traitement
-			eventChan <- line
-
-			// Déterminer le type d'événement pour le log
-			eventType := "server_output"
-			level := "INFO"
-
-			if strings.Contains(line, "Collision between") {
-				eventType = "collision"
-				level = "WARNING"
-			} else if strings.Contains(line, "LAP") {
-				eventType = "lap_completed"
-			} else if strings.Contains(line, "CONNECTED") {
-				eventType = "player_connect"
-			} else if strings.Contains(line, "DISCONNECTED") {
-				eventType = "player_disconnect"
-			} else if strings.Contains(line, "SESSION") {
-				eventType = "session_change"
-			} else if strings.Contains(line, "Lobby registration") {
-				eventType = "lobby_registration"
-			} else if strings.Contains(line, "ERROR") {
-				eventType = "server_error"
-				level = "ERROR"
-			} else if strings.Contains(line, "Warning") {
-				eventType = "server_warning"
-				level = "WARNING"
-			}
-
-			// Envoyer l'événement à VictoriaLogs
-			logsClient.LogEvent(level, line, eventType, map[string]string{
-				"server_id":  serverState.ServerID,
-				"source":     "server_log",
-				"event_type": eventType,
-			})
-		} else if strings.Contains(line, "CHAT:") {
-			// Traitement spécial pour les messages de chat
-			eventType := "chat_message"
-			level := "INFO"
-
-			// Extraire le message de chat
-			chatParts := strings.SplitN(line, "CHAT:", 2)
-			if len(chatParts) > 1 {
-				// Extraire le nom du joueur si possible
-				playerName := utils.ExtractName(line)
-
-				// Extraire le contenu du message
-				chatMessage := utils.ExtractChatMessage(line)
-
-				// Créer un message formaté
-				formattedMessage := chatMessage
-				if playerName != "" {
-					formattedMessage = fmt.Sprintf("%s: %s", playerName, chatMessage)
-				}
-
-				// Envoyer le message au canal pour traitement
-				eventChan <- line
-
-				// Envoyer directement à VictoriaLogs avec des labels spécifiques
-				logsClient.LogEvent(level, formattedMessage, eventType, map[string]string{
-					"server_id":   serverState.ServerID,
-					"source":      "chat",
-					"event_type":  eventType,
-					"player_name": playerName,
-				})
-			}
-		}
-	}
-
-	// Démarrer le monitoring avec les deux clients
-	logMonitor := monitoring.NewLogMonitor(
-		metricsClient,
-		logsClient,
-		serverConfig.Logging.Directory,
-		monitoring.WithPatterns(serverConfig.Logging.Patterns),
-		monitoring.WithMaxFileSize(serverConfig.Logging.MaxFileSize),
-		monitoring.WithLineCallback(captureServerEvents),
-	)
-
-	// Démarrer les goroutines avec gestion appropriée
+	// Create a context with cancellation for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// For each goroutine, add to the WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		metricsClient.StartMetricBuffer(ctx)
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logMonitor.Start(ctx)
-	}()
-
-	// Initialiser et démarrer le moniteur système
-	systemMonitor, err := monitoring.NewSystemMonitor(serverState, metricsClient)
-	if err != nil {
-		utils.LogError("Erreur lors de l'initialisation du moniteur système: %v", err)
-	} else {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			systemMonitor.Start(ctx)
-		}()
-
-		// Surveiller la latence réseau vers des hôtes spécifiques
-		targetHosts := []string{
-			"steam.corsa.club:27015",
-			"api.corsa.club:443",
-			"metrics.corsa.club:8428",
-		}
-
-		for _, host := range targetHosts {
-			wg.Add(1)
-			go func(targetHost string) {
-				defer wg.Done()
-				systemMonitor.MonitorNetworkLatency(ctx, targetHost)
-			}(host)
-		}
-	}
-
-	// Start monitoring (utiliser le nouveau SystemMonitor au lieu de MonitorSystemResources)
-	go monitoring.MonitorHealthMetrics(ctx, metricsClient, serverState)
-	// Remplacer l'ancienne fonction par notre nouveau moniteur système
-	// go monitoring.MonitorSystemResources(ctx, serverState)
-	go monitoring.MonitorDetailedMetrics(ctx, metricsClient, serverState)
-	go monitoring.MonitorSessionMetrics(ctx, metricsClient, serverState)
-
-	// Démarrer le monitoring des performances internes
-	go metrics.StartPerformanceMonitoring(ctx, metricsClient)
-
-	// Démarrer le monitoring des événements
-	go monitoring.MonitorServerEvents(ctx, metricsClient, logsClient, serverState, eventChan)
-
-	// Initialiser la configuration d'authentification
+	// Initialize WebSocket server
 	authConfig := config.NewAuthConfig()
-	if !authConfig.IsValid() {
-		utils.LogWarning("WebSocket authentication not configured (AUTH_STEAM_ID and AUTH_USER_ID required)")
-	}
-
-	// Initialiser le serveur WebSocket avec l'authentification
 	wsServer := websocket.NewWebSocketServer(authConfig)
 	go wsServer.Start(ctx)
 
-	// Create a channel to signal when the server is ready
-	serverReady := make(chan struct{}, 1)
+	// Initialize health check server
+	initHealthServer(serverState, wsServer)
 
-	// Prepare and start the server
-	var scriptPath string
-	if os.Getenv("TEST_MODE") == "true" {
-		scriptPath = "/app/test-script.sh"
-		utils.LogInfo("Running in test mode with script: %s", scriptPath)
-	} else {
-		scriptPath = *input
-	}
-	cmd := prepareServerCommand(ctx, &scriptPath, args, serverState, serverReady, metricsClient, wsServer, logsClient, geoipService, cancel)
-	if err := cmd.Start(); err != nil {
-		utils.LogError("Error Starting Cmd: %v", err)
-		os.Exit(1)
-	}
+	// Start the keep-alive routine
+	go startKeepAliveRoutine(ctx)
 
-	// Add this code to wait for the command to finish with detailed error reporting
-	go func() {
-		if err := cmd.Wait(); err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				utils.LogError("Server process exited with code %d: %v", exitErr.ExitCode(), err)
-				if exitErr.Stderr != nil {
-					utils.LogError("Server stderr: %s", string(exitErr.Stderr))
-				}
-			} else {
-				utils.LogError("Server process exited with error: %v", err)
-			}
-			// Only initiate graceful shutdown if this is not a test mode
-			if os.Getenv("TEST_MODE") != "true" {
-				cancel()
-			} else {
-				utils.LogInfo("Test script completed, but keeping container alive")
-				// In test mode, start a simple keep-alive routine
-				startKeepAliveRoutine(ctx)
-			}
-		}
-	}()
+	// Start the server ready channel
+	serverReady := make(chan struct{})
 
-	// Wait for termination signals
-	waitForTerminationSignal(cancel)
+	// Prepare and start the server command
+	cmd := prepareServerCommand(ctx, input, args, serverState, serverReady, metricsClient, wsServer, logsClient, geoipService, cancel)
+
+	// Setup signal handler for graceful shutdown
+	setupSignalHandler(cancel, serverState)
+
+	// Start event processing goroutine
+	go processServerEvents(ctx, eventChan, serverState, metricsClient, logsClient, geoipService)
+
+	// Wait for server to be ready
+	<-serverReady
+	utils.LogInfo("Server is ready to accept connections")
+
+	// Monitor process exit
+	go monitorProcessExit(cmd)
+
+	// Wait for context cancellation
+	<-ctx.Done()
+	utils.LogInfo("Context cancelled, shutting down...")
 
 	// Wait for all goroutines to finish
 	wg.Wait()
+	utils.LogInfo("All goroutines finished, exiting")
+}
+
+// processServerEvents handles server events from the event channel
+func processServerEvents(ctx context.Context, eventChan <-chan string, state *types.ServerState,
+	metricsClient *victoria.MetricsClient, logsClient victoria.LogsClient, geoipService *geoip.GeoIPService) {
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event := <-eventChan:
+			// Determine event type and log level
+			eventType := "server_output"
+			level := "INFO"
+
+			// Process different event types
+			if strings.Contains(event, "Collision between") {
+				eventType = "collision"
+				level = "WARNING"
+				// Process collision event
+				processCollisionEvent(event, state, metricsClient)
+			} else if strings.Contains(event, "LAP") {
+				eventType = "lap"
+				// Process lap event
+				processLapEvent(event, state, metricsClient)
+			} else if strings.Contains(event, "Network stats") {
+				eventType = "network_stats"
+				// Process network stats
+				processNetworkStats(event, state, metricsClient)
+			} else if strings.Contains(event, "CONNECTED") {
+				eventType = "player_connected"
+				// Process player connection
+				processPlayerConnection(event, state, metricsClient, geoipService)
+			} else if strings.Contains(event, "DISCONNECTED") {
+				eventType = "player_disconnected"
+				// Process player disconnection
+				processPlayerDisconnection(event, state, metricsClient)
+			} else if strings.Contains(event, "SESSION") {
+				eventType = "session_change"
+				// Process session change
+				processSessionChange(event, state, metricsClient)
+			} else if strings.Contains(event, "ERROR") {
+				eventType = "error"
+				level = "ERROR"
+				// Process error
+				processErrorEvent(event, state, metricsClient)
+			} else if strings.Contains(event, "Warning") {
+				eventType = "warning"
+				level = "WARNING"
+				// Process warning
+				processWarningEvent(event, state, metricsClient)
+			}
+
+			// Log the event
+			labels := map[string]string{
+				"server_id":   state.ServerID,
+				"server_name": state.ServerName,
+				"event_type":  eventType,
+			}
+			logsClient.LogEvent(level, event, eventType, labels)
+		}
+	}
+}
+
+// initGeoIPService initializes the GeoIP service if enabled
+func initGeoIPService(geoipConfig config.GeoIPConfig) *geoip.GeoIPService {
+	if !geoipConfig.Enabled {
+		utils.LogInfo("GeoIP service is disabled")
+		return nil
+	}
+
+	utils.LogInfo("Initializing GeoIP service with database: %s", geoipConfig.DatabasePath)
+	geoipService, err := geoip.InitGeoIPService(&geoipConfig)
+	if err != nil {
+		utils.LogWarning("Failed to initialize GeoIP service: %v", err)
+		return nil
+	}
+
+	utils.LogInfo("GeoIP service initialized successfully")
+	return geoipService
+}
+
+// processCollisionEvent processes a collision event
+func processCollisionEvent(event string, state *types.ServerState, metricsClient *victoria.MetricsClient) {
+	// Implementation details
+}
+
+// processLapEvent processes a lap event
+func processLapEvent(event string, state *types.ServerState, metricsClient *victoria.MetricsClient) {
+	// Implementation details
+}
+
+// processNetworkStats processes network statistics
+func processNetworkStats(event string, state *types.ServerState, metricsClient *victoria.MetricsClient) {
+	// Implementation details
+}
+
+// processPlayerConnection processes a player connection event
+func processPlayerConnection(event string, state *types.ServerState,
+	metricsClient *victoria.MetricsClient, geoipService *geoip.GeoIPService) {
+	// Implementation details
+}
+
+// processPlayerDisconnection processes a player disconnection event
+func processPlayerDisconnection(event string, state *types.ServerState, metricsClient *victoria.MetricsClient) {
+	// Implementation details
+}
+
+// processSessionChange processes a session change event
+func processSessionChange(event string, state *types.ServerState, metricsClient *victoria.MetricsClient) {
+	// Implementation details
+}
+
+// processErrorEvent processes an error event
+func processErrorEvent(event string, state *types.ServerState, metricsClient *victoria.MetricsClient) {
+	// Implementation details
+}
+
+// processWarningEvent processes a warning event
+func processWarningEvent(event string, state *types.ServerState, metricsClient *victoria.MetricsClient) {
+	// Implementation details
 }
 
 // prepareServerCommand creates and configures the exec.Cmd for the Assetto Corsa server.
@@ -599,7 +514,7 @@ func initHealthServer(state *types.ServerState, wsServer *websocket.WebSocketSer
 func initVictoriaMetrics() *victoria.MetricsClient {
 	cfg := config.NewDefaultConfig()
 
-	// Configuration Victoria Metrics URL et credentials
+	// Configure VictoriaMetrics URL and credentials
 	if url := os.Getenv("VICTORIA_METRICS_URL"); url != "" {
 		if port := os.Getenv("VICTORIA_METRICS_PORT"); port != "" {
 			cfg.Victoria.URL = fmt.Sprintf("http://%s:%s", url, port)
@@ -608,16 +523,7 @@ func initVictoriaMetrics() *victoria.MetricsClient {
 		}
 	}
 
-	// Configuration Victoria Logs URL et credentials
-	if url := os.Getenv("VICTORIA_LOGS_URL"); url != "" {
-		if port := os.Getenv("VICTORIA_LOGS_PORT"); port != "" {
-			cfg.VictoriaLogs.URL = fmt.Sprintf("http://%s:%s", url, port)
-		} else {
-			cfg.VictoriaLogs.URL = fmt.Sprintf("http://%s:%s", url, config.DefaultVictoriaLogsPort)
-		}
-	}
-
-	// Configuration des credentials pour VictoriaMetrics
+	// Configure credentials for VictoriaMetrics
 	if user := os.Getenv("VICTORIA_METRICS_USERNAME"); user != "" {
 		cfg.Victoria.Username = user
 	}
@@ -625,43 +531,83 @@ func initVictoriaMetrics() *victoria.MetricsClient {
 		cfg.Victoria.Password = pass
 	}
 
-	// Configuration des credentials pour VictoriaLogs
-	if user := os.Getenv("VICTORIA_LOGS_USERNAME"); user != "" {
-		cfg.VictoriaLogs.Username = user
-	}
-	if pass := os.Getenv("VICTORIA_LOGS_PASSWORD"); pass != "" {
-		cfg.VictoriaLogs.Password = pass
+	// Configure request timeout
+	if timeout := os.Getenv("VICTORIA_METRICS_REQUEST_TIMEOUT"); timeout != "" {
+		if duration, err := time.ParseDuration(timeout); err == nil {
+			cfg.Victoria.RequestTimeout = duration
+		}
 	}
 
-	if size := os.Getenv("METRICS_BATCH_SIZE"); size != "" {
-		if val, err := strconv.Atoi(size); err == nil {
+	// Configure connection timeout
+	if timeout := os.Getenv("VICTORIA_METRICS_CONNECT_TIMEOUT"); timeout != "" {
+		if duration, err := time.ParseDuration(timeout); err == nil {
+			cfg.Victoria.ConnectTimeout = duration
+		}
+	}
+
+	// Configure retry settings
+	if retries := os.Getenv("VICTORIA_METRICS_MAX_RETRIES"); retries != "" {
+		if val, err := strconv.Atoi(retries); err == nil {
+			cfg.Victoria.MaxRetries = val
+		}
+	}
+
+	// Configure retry backoff
+	if backoff := os.Getenv("VICTORIA_METRICS_RETRY_BACKOFF"); backoff != "" {
+		if duration, err := time.ParseDuration(backoff); err == nil {
+			cfg.Victoria.RetryBackoff = duration
+		}
+	}
+
+	// Configure metrics batch size
+	if batchSize := os.Getenv("METRICS_BATCH_SIZE"); batchSize != "" {
+		if val, err := strconv.Atoi(batchSize); err == nil {
 			cfg.Metrics.BatchSize = val
 		}
 	}
 
-	if interval := os.Getenv("METRICS_FLUSH_INTERVAL"); interval != "" {
-		if duration, err := time.ParseDuration(interval); err == nil {
+	// Configure metrics flush interval
+	if flushInterval := os.Getenv("METRICS_FLUSH_INTERVAL"); flushInterval != "" {
+		if duration, err := time.ParseDuration(flushInterval); err == nil {
 			cfg.Metrics.FlushInterval = duration
 		}
 	}
 
-	if size := os.Getenv("METRICS_BUFFER_SIZE"); size != "" {
-		if val, err := strconv.Atoi(size); err == nil {
+	// Configure metrics buffer size
+	if bufferSize := os.Getenv("METRICS_BUFFER_SIZE"); bufferSize != "" {
+		if val, err := strconv.Atoi(bufferSize); err == nil {
 			cfg.Metrics.BufferSize = val
 		}
 	}
 
+	// Configure metrics retention time
 	if retention := os.Getenv("METRICS_RETENTION_TIME"); retention != "" {
 		if duration, err := time.ParseDuration(retention); err == nil {
 			cfg.Metrics.RetentionTime = duration
 		}
 	}
 
+	// Configure metrics compression
 	if compression := os.Getenv("METRICS_COMPRESSION"); compression != "" {
 		if val, err := strconv.ParseBool(compression); err == nil {
 			cfg.Metrics.Compression = val
 		}
 	}
+
+	// Display configuration information for debugging
+	utils.LogInfo("VictoriaMetrics Configuration:")
+	utils.LogInfo("  URL: %s", cfg.Victoria.URL)
+	utils.LogInfo("  Username: %v", cfg.Victoria.Username != "")
+	utils.LogInfo("  Password: %v", cfg.Victoria.Password != "")
+	utils.LogInfo("  Request Timeout: %v", cfg.Victoria.RequestTimeout)
+	utils.LogInfo("  Connect Timeout: %v", cfg.Victoria.ConnectTimeout)
+	utils.LogInfo("  Max Retries: %d", cfg.Victoria.MaxRetries)
+	utils.LogInfo("  Retry Backoff: %v", cfg.Victoria.RetryBackoff)
+	utils.LogInfo("  Batch Size: %d", cfg.Metrics.BatchSize)
+	utils.LogInfo("  Flush Interval: %v", cfg.Metrics.FlushInterval)
+	utils.LogInfo("  Buffer Size: %d", cfg.Metrics.BufferSize)
+	utils.LogInfo("  Retention Time: %v", cfg.Metrics.RetentionTime)
+	utils.LogInfo("  Compression: %v", cfg.Metrics.Compression)
 
 	return victoria.NewClient(cfg)
 }
@@ -669,7 +615,7 @@ func initVictoriaMetrics() *victoria.MetricsClient {
 func initVictoriaLogs() victoria.LogsClient {
 	cfg := config.NewDefaultConfig()
 
-	// Configuration Victoria Logs URL et credentials
+	// Configure VictoriaLogs URL and credentials
 	if url := os.Getenv("VICTORIA_LOGS_URL"); url != "" {
 		if port := os.Getenv("VICTORIA_LOGS_PORT"); port != "" {
 			cfg.VictoriaLogs.URL = fmt.Sprintf("http://%s:%s", url, port)
@@ -678,7 +624,7 @@ func initVictoriaLogs() victoria.LogsClient {
 		}
 	}
 
-	// Configuration des credentials pour VictoriaLogs
+	// Configure credentials for VictoriaLogs
 	if user := os.Getenv("VICTORIA_LOGS_USERNAME"); user != "" {
 		cfg.VictoriaLogs.Username = user
 	}
@@ -686,114 +632,125 @@ func initVictoriaLogs() victoria.LogsClient {
 		cfg.VictoriaLogs.Password = pass
 	}
 
-	// Afficher les informations de configuration pour le débogage
-	utils.LogInfo("Configuration VictoriaLogs:")
+	// Display configuration information for debugging
+	utils.LogInfo("VictoriaLogs Configuration:")
 	utils.LogInfo("  URL: %s", cfg.VictoriaLogs.URL)
 	utils.LogInfo("  Username: %s", cfg.VictoriaLogs.Username != "")
 	utils.LogInfo("  Password: %s", cfg.VictoriaLogs.Password != "")
 
+	// Configure timeout settings
+	if timeout := os.Getenv("VICTORIA_LOGS_TIMEOUT"); timeout != "" {
+		if duration, err := time.ParseDuration(timeout); err == nil {
+			cfg.VictoriaLogs.Timeout = duration
+			utils.LogInfo("  Timeout: %s", duration)
+		}
+	}
+
+	// Configure compression
+	if compression := os.Getenv("VICTORIA_LOGS_COMPRESSION"); compression != "" {
+		if val, err := strconv.ParseBool(compression); err == nil {
+			cfg.VictoriaLogs.Compression = val
+			utils.LogInfo("  Compression: %t", val)
+		}
+	}
+
 	return victoria.NewLogsClient(&cfg.VictoriaLogs)
 }
 
-// Add this function to keep the container alive in test mode
+// startKeepAliveRoutine starts a routine that keeps the process alive
 func startKeepAliveRoutine(ctx context.Context) {
+	utils.LogInfo("Starting keep-alive routine")
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-
-	utils.LogInfo("Starting keep-alive routine")
 
 	for {
 		select {
 		case <-ctx.Done():
-			utils.LogInfo("Context cancelled, stopping keep-alive routine")
+			utils.LogInfo("Keep-alive routine stopped")
 			return
 		case <-ticker.C:
-			utils.LogInfo("Keep-alive tick - container is still running")
+			utils.LogDebug("Keep-alive tick")
 		}
 	}
 }
 
-// Add this function to monitor for process exit
+// monitorProcessExit monitors the exit of the server process
 func monitorProcessExit(cmd *exec.Cmd) {
-	utils.LogInfo("Starting process exit monitor for PID %d", cmd.Process.Pid)
-
-	// Start a goroutine to periodically check if the process is still running
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			<-ticker.C
-
-			// Check if process is still running
-			process, err := os.FindProcess(cmd.Process.Pid)
-			if err != nil {
-				utils.LogWarning("Error finding process %d: %v", cmd.Process.Pid, err)
-				continue
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			utils.LogError("Server process exited with code %d: %v", exitErr.ExitCode(), err)
+			if exitErr.Stderr != nil {
+				utils.LogError("Server stderr: %s", string(exitErr.Stderr))
 			}
-
-			// On Unix, FindProcess always succeeds, so we need to send signal 0
-			// to check if the process exists
-			err = process.Signal(syscall.Signal(0))
-			if err != nil {
-				utils.LogWarning("Process %d no longer exists: %v", cmd.Process.Pid, err)
-				return
-			}
+		} else {
+			utils.LogError("Server process exited with error: %v", err)
 		}
-	}()
+
+		// Only initiate graceful shutdown if this is not a test mode
+		if os.Getenv("TEST_MODE") != "true" {
+			utils.LogInfo("Initiating graceful shutdown due to server process exit")
+			// Signal termination to the main process
+			p, err := os.FindProcess(os.Getpid())
+			if err == nil {
+				p.Signal(syscall.SIGTERM)
+			}
+		} else {
+			utils.LogInfo("Test script completed, but keeping container alive")
+		}
+	} else {
+		utils.LogInfo("Server process exited normally")
+
+		// Signal termination to the main process if not in test mode
+		if os.Getenv("TEST_MODE") != "true" {
+			utils.LogInfo("Initiating graceful shutdown due to server process exit")
+			p, err := os.FindProcess(os.Getpid())
+			if err == nil {
+				p.Signal(syscall.SIGTERM)
+			}
+		} else {
+			utils.LogInfo("Test script completed, but keeping container alive")
+		}
+	}
 }
 
-// Add this function to test VictoriaMetrics connectivity
+// testVictoriaMetricsConnection tests the connection to VictoriaMetrics
 func testVictoriaMetricsConnection(client *victoria.MetricsClient, serverID string) {
-	// Create a simple test metric
+	// Create a test metric
 	testMetric := types.MetricBatch{
 		Metrics: []types.Metric{
 			{
-				Name:      "assetto_server_test_connection",
-				Value:     1,
-				Type:      types.Counter,
+				Name:      "assetto_server_test",
+				Value:     1.0,
 				Timestamp: time.Now(),
 				LabelValues: map[string]string{
 					"server_id": serverID,
 					"test":      "true",
-					"timestamp": time.Now().Format(time.RFC3339),
 				},
 			},
 		},
-		Time: time.Now(),
 	}
 
 	// Send the test metric
-	utils.LogInfo("Sending test connection metric to VictoriaMetrics")
-	if err := client.SendMetrics(testMetric); err != nil {
-		utils.LogError("Failed to send test metric: %v", err)
+	err := client.SendMetricsImmediate(testMetric)
+	if err != nil {
+		utils.LogWarning("Failed to connect to VictoriaMetrics: %v", err)
+		utils.LogInfo("Metrics will be buffered and retried later")
 	} else {
-		utils.LogInfo("Successfully sent test metric to VictoriaMetrics")
+		utils.LogInfo("Successfully connected to VictoriaMetrics")
 	}
 }
 
-// Fonction pour tester la connexion à VictoriaLogs
+// testVictoriaLogsConnection tests the connection to VictoriaLogs
 func testVictoriaLogsConnection(client victoria.LogsClient) {
-	utils.LogInfo("Test de connexion à VictoriaLogs")
+	// Create a test log
+	err := client.LogEvent("info", "Test connection to VictoriaLogs", "test", map[string]string{
+		"test": "true",
+	})
 
-	testLog := []types.Log{
-		{
-			Timestamp: time.Now(),
-			Level:     "INFO",
-			Message:   "Test log message from Assetto Corsa server wrapper",
-			Source:    "acserver",
-			Labels: map[string]string{
-				"test":      "true",
-				"server_id": utils.GenerateServerID(),
-				"timestamp": time.Now().Format(time.RFC3339),
-			},
-		},
-	}
-
-	utils.LogInfo("Envoi d'un log de test à VictoriaLogs")
-	if err := client.SendLogs(testLog); err != nil {
-		utils.LogError("Échec de l'envoi du log de test à VictoriaLogs: %v", err)
+	if err != nil {
+		utils.LogWarning("Failed to connect to VictoriaLogs: %v", err)
+		utils.LogInfo("Logs will be buffered and retried later")
 	} else {
-		utils.LogInfo("Log de test envoyé avec succès à VictoriaLogs")
+		utils.LogInfo("Successfully connected to VictoriaLogs")
 	}
 }

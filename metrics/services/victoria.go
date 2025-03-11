@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"metrics/types"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,7 +34,7 @@ type VictoriaMetricsClient struct {
 
 // MetricBatch représente un lot de métriques à envoyer
 type MetricBatch struct {
-	Metrics []Metric
+	Metrics []types.Metric
 	Time    time.Time
 }
 
@@ -120,7 +121,7 @@ func (v *VictoriaMetricsClient) doSendMetrics(batch MetricBatch) error {
 		points = append(points, point)
 
 		// Gestion spéciale pour les histogrammes
-		if metric.Type == Histogram {
+		if metric.Type == types.Histogram {
 			points = appendHistogramPoints(points, metric)
 		}
 	}
@@ -245,7 +246,7 @@ func (v *VictoriaMetricsClient) sendToVictoriaMetrics(data []byte) error {
 func (v *VictoriaMetricsClient) StartMetricBuffer(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	batch := MetricBatch{
-		Metrics: make([]Metric, 0),
+		Metrics: make([]types.Metric, 0),
 		Time:    time.Now(),
 	}
 
@@ -262,7 +263,7 @@ func (v *VictoriaMetricsClient) StartMetricBuffer(ctx context.Context) {
 			if len(batch.Metrics) > 0 {
 				v.SendMetrics(batch)
 				batch = MetricBatch{
-					Metrics: make([]Metric, 0),
+					Metrics: make([]types.Metric, 0),
 					Time:    time.Now(),
 				}
 			}
@@ -281,30 +282,30 @@ func isRetryableError(err error) bool {
 		strings.Contains(err.Error(), "5") // 5xx errors
 }
 
-// Ajouter ces métriques internes
+// Constants for metric names
 const (
 	MetricSendDuration = "assetto_metrics_send_duration_seconds"
 	MetricBatchSize    = "assetto_metrics_batch_size"
-	MetricErrorCount   = "assetto_metrics_error_total"
-	MetricRetryCount   = "assetto_metrics_retry_total"
+	MetricErrorCount   = "assetto_metrics_error_count"
+	MetricRetryCount   = "assetto_metrics_retry_count"
 )
 
 func (v *VictoriaMetricsClient) recordMetrics(start time.Time, batchSize int, err error, retries int) {
 	duration := time.Since(start).Seconds()
 
 	batch := MetricBatch{
-		Metrics: []Metric{
+		Metrics: []types.Metric{
 			{
 				Name:        MetricSendDuration,
 				Value:       duration,
-				Type:        Gauge,
+				Type:        types.Gauge,
 				Timestamp:   time.Now(),
 				LabelValues: v.commonLabels,
 			},
 			{
 				Name:        MetricBatchSize,
 				Value:       float64(batchSize),
-				Type:        Gauge,
+				Type:        types.Gauge,
 				Timestamp:   time.Now(),
 				LabelValues: v.commonLabels,
 			},
@@ -313,20 +314,20 @@ func (v *VictoriaMetricsClient) recordMetrics(start time.Time, batchSize int, er
 	}
 
 	if err != nil {
-		batch.Metrics = append(batch.Metrics, Metric{
+		batch.Metrics = append(batch.Metrics, types.Metric{
 			Name:        MetricErrorCount,
 			Value:       1,
-			Type:        Counter,
+			Type:        types.Counter,
 			Timestamp:   time.Now(),
 			LabelValues: v.commonLabels,
 		})
 	}
 
 	if retries > 0 {
-		batch.Metrics = append(batch.Metrics, Metric{
+		batch.Metrics = append(batch.Metrics, types.Metric{
 			Name:        MetricRetryCount,
 			Value:       float64(retries),
-			Type:        Counter,
+			Type:        types.Counter,
 			Timestamp:   time.Now(),
 			LabelValues: v.commonLabels,
 		})
@@ -347,7 +348,7 @@ func mergeLabels(common, specific map[string]string) map[string]string {
 	return result
 }
 
-func appendHistogramPoints(points []MetricPoint, metric Metric) []MetricPoint {
+func appendHistogramPoints(points []MetricPoint, metric types.Metric) []MetricPoint {
 	// Ajouter les points spécifiques aux histogrammes
 	// (sum, count, buckets)
 	return points

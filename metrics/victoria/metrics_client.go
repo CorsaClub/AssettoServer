@@ -1,3 +1,5 @@
+// Package victoria provides clients for interacting with VictoriaMetrics and VictoriaLogs.
+// This file implements a client for VictoriaMetrics time series database.
 package victoria
 
 import (
@@ -24,19 +26,21 @@ import (
 	"metrics/utils"
 )
 
-// Client existant renommé pour plus de clarté
+// MetricsClient is a client for sending metrics to VictoriaMetrics
 type MetricsClient struct {
-	URL           string
-	Username      string
-	Password      string
-	client        *http.Client
-	config        *config.Config
-	buffer        chan types.MetricBatch
-	batchSize     int
-	errorRegistry *ErrorRegistry
+	URL            string
+	Username       string
+	Password       string
+	client         *http.Client
+	config         *config.Config
+	buffer         chan types.MetricBatch
+	batchSize      int
+	errorRegistry  *ErrorRegistry
+	circuitBreaker *utils.CircuitBreaker
+	rateLimiter    *utils.RateLimiter
 }
 
-// MetricPoint représente un point de données pour VictoriaMetrics
+// MetricPoint represents a data point for VictoriaMetrics
 type MetricPoint struct {
 	Metric    string            `json:"metric"`
 	Value     float64           `json:"value"`
@@ -54,6 +58,7 @@ type MetricError struct {
 	Line       int       `json:"line,omitempty"`
 }
 
+// Error returns a string representation of the error
 func (e *MetricError) Error() string {
 	return fmt.Sprintf("[%s] %s (retryable: %v)", e.Code, e.Message, e.Retryable)
 }
@@ -75,6 +80,7 @@ type ErrorRegistry struct {
 	config *config.MetricsConfig
 }
 
+// NewErrorRegistry creates a new error registry
 func NewErrorRegistry(cfg *config.MetricsConfig) *ErrorRegistry {
 	return &ErrorRegistry{
 		errors: make(map[string][]MetricError),
@@ -82,6 +88,7 @@ func NewErrorRegistry(cfg *config.MetricsConfig) *ErrorRegistry {
 	}
 }
 
+// AddError adds an error to the registry
 func (r *ErrorRegistry) AddError(err MetricError) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -95,6 +102,7 @@ func (r *ErrorRegistry) AddError(err MetricError) {
 	r.cleanup()
 }
 
+// cleanup removes errors older than one hour
 func (r *ErrorRegistry) cleanup() {
 	threshold := time.Now().Add(-1 * time.Hour)
 	for code := range r.errors {
@@ -108,12 +116,14 @@ func (r *ErrorRegistry) cleanup() {
 	}
 }
 
+// GetErrorCount returns the number of errors for a specific code
 func (r *ErrorRegistry) GetErrorCount(code string) int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.errors[code])
 }
 
+// GetRecentErrors returns errors that occurred within the specified duration
 func (r *ErrorRegistry) GetRecentErrors(duration time.Duration) []MetricError {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -132,7 +142,7 @@ func (r *ErrorRegistry) GetRecentErrors(duration time.Duration) []MetricError {
 	return recent
 }
 
-// MetricPool manages a pool of metric objects
+// MetricPool manages a pool of metric objects for efficient reuse
 var metricPool = sync.Pool{
 	New: func() interface{} {
 		return &types.Metric{}
@@ -356,7 +366,7 @@ func (c *MetricsClient) SendMetrics(batch types.MetricBatch) error {
 	return c.sendToVictoriaMetrics(batch)
 }
 
-// formatMetricsPrometheus convertit les métriques au format texte Prometheus
+// formatMetricsPrometheus converts metrics to Prometheus text format
 func (c *MetricsClient) formatMetricsPrometheus(batch types.MetricBatch) ([]byte, error) {
 	var builder strings.Builder
 
@@ -373,7 +383,7 @@ func (c *MetricsClient) formatMetricsPrometheus(batch types.MetricBatch) ([]byte
 				}
 				builder.WriteString(k)
 				builder.WriteString("=\"")
-				// Échapper les guillemets dans les valeurs
+				// Escape quotes in values
 				escapedValue := strings.ReplaceAll(v, "\"", "\\\"")
 				builder.WriteString(escapedValue)
 				builder.WriteString("\"")
@@ -385,35 +395,35 @@ func (c *MetricsClient) formatMetricsPrometheus(batch types.MetricBatch) ([]byte
 		builder.WriteString(" ")
 		builder.WriteString(fmt.Sprintf("%g", metric.Value))
 		builder.WriteString(" ")
-		builder.WriteString(fmt.Sprintf("%d", metric.Timestamp.UnixNano()/1000000)) // Millisecondes
+		builder.WriteString(fmt.Sprintf("%d", metric.Timestamp.UnixNano()/1000000)) // Milliseconds
 		builder.WriteString("\n")
 	}
 
 	return []byte(builder.String()), nil
 }
 
-// SendMetricsImmediate envoie immédiatement des métriques sans passer par le buffer
+// SendMetricsImmediate sends metrics immediately without going through the buffer
 func (c *MetricsClient) SendMetricsImmediate(batch types.MetricBatch) error {
-	// Log le format des métriques pour le débogage
+	// Log the format of the metrics for debugging
 	c.logMetricFormat(batch)
 
-	// Validation des métriques
+	// Validate metrics
 	for i := range batch.Metrics {
 		if err := validateMetric(&batch.Metrics[i], &c.config.Metrics); err != nil {
 			return c.handleError(err, ErrCodeValidation, false)
 		}
 	}
 
-	// Envoi direct à VictoriaMetrics
+	// Send directly to VictoriaMetrics
 	utils.LogInfo("Sending metrics immediately (bypassing buffer)")
 	return c.sendToVictoriaMetrics(batch)
 }
 
-// SendLogs envoie les logs à VictoriaMetrics - cette méthode ne devrait pas être utilisée
-// car elle est destinée au client de logs, pas au client de métriques
+// SendLogs sends logs to VictoriaMetrics - this method should not be used
+// because it is intended for the logs client, not the metrics client
 func (c *MetricsClient) SendLogs(logs []models.LogEntry) error {
-	utils.LogWarning("SendLogs appelé sur MetricsClient au lieu de LogsClient - les logs ne seront pas envoyés")
-	return fmt.Errorf("méthode non implémentée pour MetricsClient, utilisez LogsClient à la place")
+	utils.LogWarning("SendLogs called on MetricsClient instead of LogsClient - logs will not be sent")
+	return fmt.Errorf("method not implemented for MetricsClient, use LogsClient instead")
 }
 
 func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
@@ -454,25 +464,25 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		utils.LogError("Échec de l'envoi de métriques: %v", err)
+		utils.LogError("Sending metrics failed: %v", err)
 		return fmt.Errorf("error sending metrics: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
-		utils.LogError("Échec de l'envoi de métriques (code %d): %s",
+		utils.LogError("Sending metrics failed (code %d): %s",
 			resp.StatusCode, string(respBody))
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	// Aucun log en cas de succès
+	// No log on success
 	return nil
 }
 
-// LogEvent crée et envoie un événement de log unique
+// LogEvent creates and sends a unique log event
 func (c *MetricsClient) LogEvent(level, message string, eventType string, labels map[string]string) error {
-	// Envoyer un événement à VictoriaMetrics
+	// Send an event to VictoriaMetrics
 	c.SendMetrics(types.MetricBatch{
 		Metrics: []types.Metric{
 			{
@@ -492,27 +502,27 @@ func (c *MetricsClient) LogEvent(level, message string, eventType string, labels
 	return nil
 }
 
-// Envoyer un événement à VictoriaLogs
+// SendEvent sends an event to VictoriaLogs
 func (c *MetricsClient) SendEvent(eventType, message string, labels map[string]string) error {
-	// Créer un événement
+	// Create an event
 	event := map[string]interface{}{
 		"_msg":       message,
 		"_time":      time.Now().Format(time.RFC3339),
 		"event_type": eventType,
 	}
 
-	// Ajouter les labels
+	// Add labels
 	for k, v := range labels {
 		event[k] = v
 	}
 
-	// Convertir en JSON
+	// Marshal to JSON
 	jsonData, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event: %v", err)
 	}
 
-	// Envoyer à VictoriaLogs
+	// Send to VictoriaLogs
 	data := url.Values{}
 	data.Set("format", "json")
 	data.Set("stream", "assetto_server_event")
@@ -531,7 +541,7 @@ func (c *MetricsClient) SendEvent(eventType, message string, labels map[string]s
 	return nil
 }
 
-// Ajouter une méthode de flush avec retry
+// Add flush method with retry
 func (c *MetricsClient) flushMetrics(batch types.MetricBatch) error {
 	for attempt := 0; attempt < c.config.Victoria.MaxRetries; attempt++ {
 		if err := c.sendToVictoriaMetrics(batch); err == nil {
@@ -593,20 +603,20 @@ func (c *MetricsClient) GetErrorCount(errorCode string) int {
 	return c.errorRegistry.GetErrorCount(errorCode)
 }
 
-// Ajoutez cette fonction pour déboguer le format des métriques
+// Add this function to debug the format of the metrics
 func (c *MetricsClient) logMetricFormat(batch types.MetricBatch) {
-	// Ne logger le format que si le mode debug est activé
+	// Only log format if debug mode is active
 	if os.Getenv("DEBUG_METRICS") != "true" {
 		return
 	}
 
 	var builder strings.Builder
 
-	// Limiter à quelques métriques pour éviter de polluer les logs
+	// Limit to a few metrics to avoid cluttering logs
 	maxSamples := 3
 	sampleCount := min(maxSamples, len(batch.Metrics))
 
-	builder.WriteString(fmt.Sprintf("Échantillon de format (%d/%d métriques):\n", sampleCount, len(batch.Metrics)))
+	builder.WriteString(fmt.Sprintf("Sample format (%d/%d metrics):\n", sampleCount, len(batch.Metrics)))
 
 	for i := 0; i < sampleCount; i++ {
 		metric := batch.Metrics[i]
@@ -647,9 +657,9 @@ func min(a, b int) int {
 	return b
 }
 
-// StartMetricBuffer démarre le traitement des métriques en arrière-plan
+// StartMetricBuffer starts processing metrics in the background
 func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
-	utils.LogInfo("Système de métriques prêt (OK)")
+	utils.LogInfo("Metrics system ready (OK)")
 	ticker := time.NewTicker(c.config.Metrics.FlushInterval)
 	defer ticker.Stop()
 
@@ -661,16 +671,16 @@ func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Flush final des métriques restantes sans log
+			// Flush final remaining metrics without log
 			if len(batch.Metrics) > 0 {
 				c.sendToVictoriaMetrics(batch)
 			}
 			return
 		case newBatch := <-c.buffer:
-			// Ajouter les métriques au lot courant
+			// Add metrics to current batch
 			batch.Metrics = append(batch.Metrics, newBatch.Metrics...)
 
-			// Si le lot atteint la taille maximale, l'envoyer immédiatement
+			// If batch reaches maximum size, send immediately
 			if len(batch.Metrics) >= c.batchSize {
 				c.sendToVictoriaMetrics(batch)
 				batch = types.MetricBatch{
@@ -679,7 +689,7 @@ func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
 				}
 			}
 		case <-ticker.C:
-			// Envoyer le lot actuel s'il contient des métriques
+			// Send current batch if it contains metrics
 			if len(batch.Metrics) > 0 {
 				c.sendToVictoriaMetrics(batch)
 				batch = types.MetricBatch{

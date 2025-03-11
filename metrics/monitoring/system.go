@@ -3,12 +3,13 @@ package monitoring
 import (
 	"context"
 	"fmt"
-	stdnet "net"
+	"net"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
-	metrics "metrics/services"
+	"metrics/metrics"
 	"metrics/types"
 	"metrics/utils"
 	"metrics/victoria"
@@ -16,7 +17,7 @@ import (
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/mem"
-	"github.com/shirou/gopsutil/v3/net"
+	psnet "github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
 )
 
@@ -26,7 +27,7 @@ type SystemMonitor struct {
 	vmClient    *victoria.MetricsClient
 	process     *process.Process
 	networkIfs  []string
-	lastNetIO   map[string]net.IOCountersStat
+	lastNetIO   map[string]psnet.IOCountersStat
 	lastCPUTime time.Time
 	diskPaths   []string
 }
@@ -37,76 +38,80 @@ func NewSystemMonitor(state *types.ServerState, vmClient *victoria.MetricsClient
 	pid := os.Getpid()
 	proc, err := process.NewProcess(int32(pid))
 	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la création du moniteur système: %w", err)
+		return nil, fmt.Errorf("failed to get process info: %w", err)
 	}
 
 	// Obtenir les interfaces réseau
-	ifaces, err := stdnet.Interfaces()
+	interfaces, err := net.Interfaces()
 	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la récupération des interfaces réseau: %w", err)
+		return nil, fmt.Errorf("failed to get network interfaces: %w", err)
 	}
 
-	// Filtrer les interfaces actives
-	var activeIfs []string
-	for _, iface := range ifaces {
-		if iface.Flags&stdnet.FlagUp != 0 && iface.Flags&stdnet.FlagLoopback == 0 {
-			activeIfs = append(activeIfs, iface.Name)
+	// Filtrer les interfaces valides
+	var validIfs []string
+	for _, iface := range interfaces {
+		// Ignorer les interfaces loopback et down
+		if iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagLoopback == 0 {
+			validIfs = append(validIfs, iface.Name)
 		}
 	}
 
-	// Initialiser les compteurs réseau
-	ioCounters, err := net.IOCounters(true)
+	// Obtenir les chemins de disque
+	partitions, err := disk.Partitions(false)
 	if err != nil {
-		return nil, fmt.Errorf("erreur lors de la récupération des compteurs réseau: %w", err)
+		return nil, fmt.Errorf("failed to get disk partitions: %w", err)
 	}
 
-	lastNetIO := make(map[string]net.IOCountersStat)
-	for _, io := range ioCounters {
-		for _, name := range activeIfs {
-			if io.Name == name {
-				lastNetIO[name] = io
-				break
+	var diskPaths []string
+	for _, part := range partitions {
+		// Ignorer les systèmes de fichiers spéciaux
+		if !strings.HasPrefix(part.Fstype, "dev") && !strings.HasPrefix(part.Fstype, "proc") {
+			diskPaths = append(diskPaths, part.Mountpoint)
+		}
+	}
+
+	// Initialiser le moniteur
+	sm := &SystemMonitor{
+		state:       state,
+		vmClient:    vmClient,
+		process:     proc,
+		networkIfs:  validIfs,
+		lastNetIO:   make(map[string]psnet.IOCountersStat),
+		lastCPUTime: time.Now(),
+		diskPaths:   diskPaths,
+	}
+
+	// Initialiser les statistiques réseau
+	netStats, err := psnet.IOCounters(true)
+	if err == nil {
+		for _, stat := range netStats {
+			for _, ifName := range validIfs {
+				if stat.Name == ifName {
+					sm.lastNetIO[ifName] = stat
+					break
+				}
 			}
 		}
 	}
 
-	// Déterminer les chemins de disque à surveiller
-	diskPaths := []string{"/", "/var", "/tmp"}
-	// Ajouter le répertoire de travail actuel
-	wd, err := os.Getwd()
-	if err == nil {
-		diskPaths = append(diskPaths, wd)
-	}
-
-	return &SystemMonitor{
-		state:       state,
-		vmClient:    vmClient,
-		process:     proc,
-		networkIfs:  activeIfs,
-		lastNetIO:   lastNetIO,
-		lastCPUTime: time.Now(),
-		diskPaths:   diskPaths,
-	}, nil
+	return sm, nil
 }
 
-// Start démarre la surveillance des métriques système
+// Start démarre la collecte des métriques système
 func (sm *SystemMonitor) Start(ctx context.Context) {
-	// Collecter les métriques toutes les secondes
-	ticker := time.NewTicker(1 * time.Second)
+	// Collecter les métriques toutes les 15 secondes
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
-	// Collecter les métriques de disque moins fréquemment
-	diskTicker := time.NewTicker(30 * time.Second)
-	defer diskTicker.Stop()
+	// Collecter immédiatement au démarrage
+	sm.collectNetworkMetrics()
+	sm.collectCPUMetrics()
+	sm.collectMemoryMetrics()
+	sm.collectDiskMetrics()
+	sm.collectGoMetrics()
+	sm.collectServerState()
 
-	// Collecter les métriques Go moins fréquemment
-	goTicker := time.NewTicker(10 * time.Second)
-	defer goTicker.Stop()
-
-	// Collecter l'état du serveur régulièrement
-	stateTicker := time.NewTicker(5 * time.Second)
-	defer stateTicker.Stop()
-
+	// Boucle principale de collecte
 	for {
 		select {
 		case <-ctx.Done():
@@ -115,11 +120,8 @@ func (sm *SystemMonitor) Start(ctx context.Context) {
 			sm.collectNetworkMetrics()
 			sm.collectCPUMetrics()
 			sm.collectMemoryMetrics()
-		case <-diskTicker.C:
 			sm.collectDiskMetrics()
-		case <-goTicker.C:
 			sm.collectGoMetrics()
-		case <-stateTicker.C:
 			sm.collectServerState()
 		}
 	}
@@ -127,10 +129,10 @@ func (sm *SystemMonitor) Start(ctx context.Context) {
 
 // collectNetworkMetrics collecte les métriques réseau
 func (sm *SystemMonitor) collectNetworkMetrics() {
-	// Obtenir les compteurs réseau actuels
-	ioCounters, err := net.IOCounters(true)
+	// Obtenir les statistiques réseau
+	netStats, err := psnet.IOCounters(true)
 	if err != nil {
-		utils.LogError("Erreur lors de la récupération des compteurs réseau: %v", err)
+		utils.LogError("Failed to get network stats: %v", err)
 		return
 	}
 
@@ -140,101 +142,103 @@ func (sm *SystemMonitor) collectNetworkMetrics() {
 		Time:    time.Now(),
 	}
 
-	// Calculer les métriques pour chaque interface
-	for _, io := range ioCounters {
-		for _, name := range sm.networkIfs {
-			if io.Name == name {
-				// Vérifier si nous avons des données précédentes pour cette interface
-				if lastIO, ok := sm.lastNetIO[name]; ok {
-					// Calculer les octets reçus et envoyés depuis la dernière mesure
-					bytesRecv := io.BytesRecv - lastIO.BytesRecv
-					bytesSent := io.BytesSent - lastIO.BytesSent
-					packetsRecv := io.PacketsRecv - lastIO.PacketsRecv
-					packetsSent := io.PacketsSent - lastIO.PacketsSent
-					errIn := io.Errin - lastIO.Errin
-					errOut := io.Errout - lastIO.Errout
-					dropIn := io.Dropin - lastIO.Dropin
-					dropOut := io.Dropout - lastIO.Dropout
-
-					// Créer les labels communs
-					labels := map[string]string{
-						"server_id":   sm.state.ServerID,
-						"server_name": sm.state.ServerName,
-						"server_type": sm.state.ServerType,
-						"interface":   name,
-					}
-
-					// Ajouter les métriques au lot
-					batch.Metrics = append(batch.Metrics,
-						types.Metric{
-							Name:        metrics.NetworkBytesReceived,
-							Value:       float64(bytesRecv),
-							Type:        types.Counter,
-							Timestamp:   time.Now(),
-							LabelValues: labels,
-						},
-						types.Metric{
-							Name:        metrics.NetworkBytesSent,
-							Value:       float64(bytesSent),
-							Type:        types.Counter,
-							Timestamp:   time.Now(),
-							LabelValues: labels,
-						},
-						types.Metric{
-							Name:        metrics.NetworkPacketsReceived,
-							Value:       float64(packetsRecv),
-							Type:        types.Counter,
-							Timestamp:   time.Now(),
-							LabelValues: labels,
-						},
-						types.Metric{
-							Name:        metrics.NetworkPacketsSent,
-							Value:       float64(packetsSent),
-							Type:        types.Counter,
-							Timestamp:   time.Now(),
-							LabelValues: labels,
-						},
-						types.Metric{
-							Name:        metrics.NetworkErrors,
-							Value:       float64(errIn + errOut),
-							Type:        types.Counter,
-							Timestamp:   time.Now(),
-							LabelValues: labels,
-						},
-						types.Metric{
-							Name:        metrics.NetworkDrops,
-							Value:       float64(dropIn + dropOut),
-							Type:        types.Counter,
-							Timestamp:   time.Now(),
-							LabelValues: labels,
-						},
-					)
-
-					// Calculer le taux de perte de paquets
-					totalPackets := float64(packetsRecv + packetsSent)
-					if totalPackets > 0 {
-						packetLoss := float64(errIn+errOut+dropIn+dropOut) / totalPackets
-						batch.Metrics = append(batch.Metrics, types.Metric{
-							Name:        metrics.NetworkPacketLoss,
-							Value:       packetLoss,
-							Type:        types.Gauge,
-							Timestamp:   time.Now(),
-							LabelValues: labels,
-						})
-					}
-				}
-
-				// Mettre à jour les dernières valeurs
-				sm.lastNetIO[name] = io
+	// Traiter chaque interface
+	for _, stat := range netStats {
+		// Vérifier si c'est une interface que nous surveillons
+		isMonitored := false
+		for _, ifName := range sm.networkIfs {
+			if stat.Name == ifName {
+				isMonitored = true
 				break
 			}
 		}
+
+		if !isMonitored {
+			continue
+		}
+
+		// Créer les labels pour cette interface
+		labels := map[string]string{
+			"server_id":   sm.state.ServerID,
+			"server_name": sm.state.ServerName,
+			"server_type": sm.state.ServerType,
+			"interface":   stat.Name,
+		}
+
+		// Calculer les deltas si nous avons des données précédentes
+		if lastStat, ok := sm.lastNetIO[stat.Name]; ok {
+			// Temps écoulé depuis la dernière mesure
+			elapsed := time.Since(sm.lastCPUTime).Seconds()
+			if elapsed <= 0 {
+				elapsed = 1 // Éviter la division par zéro
+			}
+
+			// Calculer les taux par seconde
+			bytesSentRate := float64(stat.BytesSent-lastStat.BytesSent) / elapsed
+			bytesRecvRate := float64(stat.BytesRecv-lastStat.BytesRecv) / elapsed
+			packetsSentRate := float64(stat.PacketsSent-lastStat.PacketsSent) / elapsed
+			packetsRecvRate := float64(stat.PacketsRecv-lastStat.PacketsRecv) / elapsed
+			errorsRate := float64(stat.Errin+stat.Errout-lastStat.Errin-lastStat.Errout) / elapsed
+			dropsRate := float64(stat.Dropin+stat.Dropout-lastStat.Dropin-lastStat.Dropout) / elapsed
+
+			// Ajouter les métriques
+			batch.Metrics = append(batch.Metrics, []types.Metric{
+				{
+					Name:        metrics.NetworkBytesSent.Name,
+					Value:       bytesSentRate,
+					Type:        types.Gauge,
+					Timestamp:   time.Now(),
+					LabelValues: labels,
+				},
+				{
+					Name:        metrics.NetworkBytesReceived.Name,
+					Value:       bytesRecvRate,
+					Type:        types.Gauge,
+					Timestamp:   time.Now(),
+					LabelValues: labels,
+				},
+				{
+					Name:        metrics.NetworkPacketsSent.Name,
+					Value:       packetsSentRate,
+					Type:        types.Gauge,
+					Timestamp:   time.Now(),
+					LabelValues: labels,
+				},
+				{
+					Name:        metrics.NetworkPacketsReceived.Name,
+					Value:       packetsRecvRate,
+					Type:        types.Gauge,
+					Timestamp:   time.Now(),
+					LabelValues: labels,
+				},
+				{
+					Name:        metrics.NetworkErrors.Name,
+					Value:       errorsRate,
+					Type:        types.Gauge,
+					Timestamp:   time.Now(),
+					LabelValues: labels,
+				},
+				{
+					Name:        metrics.NetworkDrops.Name,
+					Value:       dropsRate,
+					Type:        types.Gauge,
+					Timestamp:   time.Now(),
+					LabelValues: labels,
+				},
+			}...)
+		}
+
+		// Mettre à jour les statistiques précédentes
+		sm.lastNetIO[stat.Name] = stat
 	}
+
+	// Mettre à jour le temps de la dernière mesure
+	sm.lastCPUTime = time.Now()
 
 	// Envoyer les métriques
 	if len(batch.Metrics) > 0 {
 		if err := sm.vmClient.SendMetrics(batch); err != nil {
-			utils.LogError("Erreur lors de l'envoi des métriques réseau: %v", err)
+			utils.LogError("Failed to send network metrics: %v", err)
 		}
 	}
 }
@@ -242,21 +246,21 @@ func (sm *SystemMonitor) collectNetworkMetrics() {
 // collectCPUMetrics collecte les métriques CPU
 func (sm *SystemMonitor) collectCPUMetrics() {
 	// Obtenir l'utilisation CPU du processus
-	cpuPercent, err := sm.process.CPUPercent()
+	procCPU, err := sm.process.CPUPercent()
 	if err != nil {
-		utils.LogError("Erreur lors de la récupération de l'utilisation CPU: %v", err)
+		utils.LogError("Failed to get process CPU usage: %v", err)
 		return
 	}
 
-	// Obtenir l'utilisation CPU globale
-	systemCPU, err := cpu.Percent(0, false)
+	// Obtenir l'utilisation CPU du système
+	sysCPU, err := cpu.Percent(0, true)
 	if err != nil {
-		utils.LogError("Erreur lors de la récupération de l'utilisation CPU système: %v", err)
+		utils.LogError("Failed to get system CPU usage: %v", err)
 		return
 	}
 
-	// Créer les labels
-	labels := map[string]string{
+	// Créer les labels de base
+	baseLabels := map[string]string{
 		"server_id":   sm.state.ServerID,
 		"server_name": sm.state.ServerName,
 		"server_type": sm.state.ServerType,
@@ -266,70 +270,60 @@ func (sm *SystemMonitor) collectCPUMetrics() {
 	batch := types.MetricBatch{
 		Metrics: []types.Metric{
 			{
-				Name:        metrics.ServerCPUUsage,
-				Value:       cpuPercent,
+				Name:        metrics.ServerCPUUsage.Name,
+				Value:       procCPU,
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: labels,
-			},
-			{
-				Name:        metrics.SystemCPUUsage,
-				Value:       systemCPU[0],
-				Type:        types.Gauge,
-				Timestamp:   time.Now(),
-				LabelValues: labels,
+				LabelValues: baseLabels,
 			},
 		},
 		Time: time.Now(),
 	}
 
-	// Obtenir l'utilisation CPU par cœur
-	perCPU, err := cpu.Percent(0, true)
-	if err == nil {
-		for i, usage := range perCPU {
-			coreLabels := cloneLabels(labels)
-			coreLabels["core"] = fmt.Sprintf("%d", i)
-
-			batch.Metrics = append(batch.Metrics, types.Metric{
-				Name:        metrics.SystemCPUUsage,
-				Value:       usage,
-				Type:        types.Gauge,
-				Timestamp:   time.Now(),
-				LabelValues: coreLabels,
-			})
-		}
+	// Ajouter les métriques CPU par cœur
+	for i, usage := range sysCPU {
+		cpuLabels := cloneLabels(baseLabels)
+		cpuLabels["cpu"] = fmt.Sprintf("cpu%d", i)
+		batch.Metrics = append(batch.Metrics, types.Metric{
+			Name:        metrics.SystemCPUUsage.Name,
+			Value:       usage,
+			Type:        types.Gauge,
+			Timestamp:   time.Now(),
+			LabelValues: cpuLabels,
+		})
 	}
 
 	// Envoyer les métriques
 	if err := sm.vmClient.SendMetrics(batch); err != nil {
-		utils.LogError("Erreur lors de l'envoi des métriques CPU: %v", err)
+		utils.LogError("Failed to send CPU metrics: %v", err)
 	}
 }
 
 // collectMemoryMetrics collecte les métriques mémoire
 func (sm *SystemMonitor) collectMemoryMetrics() {
 	// Obtenir l'utilisation mémoire du processus
-	memInfo, err := sm.process.MemoryInfo()
+	procMem, err := sm.process.MemoryInfo()
 	if err != nil {
-		utils.LogError("Erreur lors de la récupération de l'utilisation mémoire: %v", err)
+		utils.LogError("Failed to get process memory usage: %v", err)
 		return
 	}
 
-	// Obtenir l'utilisation mémoire globale
-	systemMem, err := mem.VirtualMemory()
+	// Obtenir l'utilisation mémoire du système
+	sysMem, err := mem.VirtualMemory()
 	if err != nil {
-		utils.LogError("Erreur lors de la récupération de l'utilisation mémoire système: %v", err)
+		utils.LogError("Failed to get system memory usage: %v", err)
 		return
 	}
 
 	// Obtenir l'utilisation swap
-	swapMem, err := mem.SwapMemory()
+	sysSwap, err := mem.SwapMemory()
 	if err != nil {
-		utils.LogWarning("Erreur lors de la récupération de l'utilisation swap: %v", err)
+		utils.LogError("Failed to get swap memory usage: %v", err)
+		return
 	}
 
-	// Créer les labels
-	labels := map[string]string{
+	// Créer les labels de base
+	baseLabels := map[string]string{
 		"server_id":   sm.state.ServerID,
 		"server_name": sm.state.ServerName,
 		"server_type": sm.state.ServerType,
@@ -339,58 +333,54 @@ func (sm *SystemMonitor) collectMemoryMetrics() {
 	batch := types.MetricBatch{
 		Metrics: []types.Metric{
 			{
-				Name:        metrics.ServerMemoryUsage,
-				Value:       float64(memInfo.RSS),
+				Name:        metrics.ServerMemoryUsage.Name,
+				Value:       float64(procMem.RSS),
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: labels,
+				LabelValues: baseLabels,
 			},
 			{
-				Name:        metrics.SystemMemoryTotal,
-				Value:       float64(systemMem.Total),
+				Name:        metrics.SystemMemoryTotal.Name,
+				Value:       float64(sysMem.Total),
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: labels,
+				LabelValues: baseLabels,
 			},
 			{
-				Name:        metrics.SystemMemoryUsed,
-				Value:       float64(systemMem.Used),
+				Name:        metrics.SystemMemoryUsed.Name,
+				Value:       float64(sysMem.Used),
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: labels,
+				LabelValues: baseLabels,
 			},
 			{
-				Name:        metrics.SystemMemoryFree,
-				Value:       float64(systemMem.Free),
+				Name:        metrics.SystemMemoryFree.Name,
+				Value:       float64(sysMem.Free),
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: labels,
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.SystemMemorySwap.Name,
+				Value:       float64(sysSwap.Used),
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
 			},
 		},
 		Time: time.Now(),
 	}
 
-	// Ajouter les métriques swap si disponibles
-	if swapMem != nil {
-		batch.Metrics = append(batch.Metrics, types.Metric{
-			Name:        metrics.SystemMemorySwap,
-			Value:       float64(swapMem.Used),
-			Type:        types.Gauge,
-			Timestamp:   time.Now(),
-			LabelValues: labels,
-		})
-	}
-
 	// Envoyer les métriques
 	if err := sm.vmClient.SendMetrics(batch); err != nil {
-		utils.LogError("Erreur lors de l'envoi des métriques mémoire: %v", err)
+		utils.LogError("Failed to send memory metrics: %v", err)
 	}
 }
 
-// collectDiskMetrics collecte les métriques d'utilisation du disque
+// collectDiskMetrics collecte les métriques disque
 func (sm *SystemMonitor) collectDiskMetrics() {
-	// Créer les labels communs
-	labels := map[string]string{
+	// Créer les labels de base
+	baseLabels := map[string]string{
 		"server_id":   sm.state.ServerID,
 		"server_name": sm.state.ServerName,
 		"server_type": sm.state.ServerType,
@@ -402,53 +392,53 @@ func (sm *SystemMonitor) collectDiskMetrics() {
 		Time:    time.Now(),
 	}
 
-	// Collecter les métriques pour chaque chemin
+	// Collecter les métriques pour chaque chemin de disque
 	for _, path := range sm.diskPaths {
 		usage, err := disk.Usage(path)
 		if err != nil {
-			utils.LogWarning("Erreur lors de la récupération de l'utilisation disque pour %s: %v", path, err)
+			utils.LogError("Failed to get disk usage for %s: %v", path, err)
 			continue
 		}
 
-		// Créer des labels spécifiques pour ce chemin
-		pathLabels := cloneLabels(labels)
-		pathLabels["path"] = path
+		// Créer les labels pour ce chemin
+		diskLabels := cloneLabels(baseLabels)
+		diskLabels["path"] = path
 
 		// Ajouter les métriques
-		batch.Metrics = append(batch.Metrics,
-			types.Metric{
-				Name:        metrics.SystemDiskUsage,
+		batch.Metrics = append(batch.Metrics, []types.Metric{
+			{
+				Name:        metrics.SystemDiskUsage.Name,
 				Value:       float64(usage.Used),
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: pathLabels,
+				LabelValues: diskLabels,
 			},
-			types.Metric{
-				Name:        metrics.SystemDiskFree,
+			{
+				Name:        metrics.SystemDiskFree.Name,
 				Value:       float64(usage.Free),
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: pathLabels,
+				LabelValues: diskLabels,
 			},
-		)
+		}...)
 	}
 
 	// Envoyer les métriques
 	if len(batch.Metrics) > 0 {
 		if err := sm.vmClient.SendMetrics(batch); err != nil {
-			utils.LogError("Erreur lors de l'envoi des métriques disque: %v", err)
+			utils.LogError("Failed to send disk metrics: %v", err)
 		}
 	}
 }
 
-// collectGoMetrics collecte les métriques de l'environnement Go
+// collectGoMetrics collecte les métriques Go
 func (sm *SystemMonitor) collectGoMetrics() {
-	// Obtenir les statistiques de la mémoire Go
-	var goMemStats runtime.MemStats
-	runtime.ReadMemStats(&goMemStats)
+	// Obtenir les statistiques mémoire Go
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
 
-	// Créer les labels
-	labels := map[string]string{
+	// Créer les labels de base
+	baseLabels := map[string]string{
 		"server_id":   sm.state.ServerID,
 		"server_name": sm.state.ServerName,
 		"server_type": sm.state.ServerType,
@@ -458,25 +448,25 @@ func (sm *SystemMonitor) collectGoMetrics() {
 	batch := types.MetricBatch{
 		Metrics: []types.Metric{
 			{
-				Name:        metrics.SystemGoMemoryAlloc,
-				Value:       float64(goMemStats.Alloc),
+				Name:        metrics.SystemGoMemoryAlloc.Name,
+				Value:       float64(memStats.Alloc),
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: labels,
+				LabelValues: baseLabels,
 			},
 			{
-				Name:        metrics.SystemGoMemorySys,
-				Value:       float64(goMemStats.Sys),
+				Name:        metrics.SystemGoMemorySys.Name,
+				Value:       float64(memStats.Sys),
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: labels,
+				LabelValues: baseLabels,
 			},
 			{
-				Name:        metrics.SystemGoRoutines,
+				Name:        metrics.SystemGoRoutines.Name,
 				Value:       float64(runtime.NumGoroutine()),
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: labels,
+				LabelValues: baseLabels,
 			},
 		},
 		Time: time.Now(),
@@ -484,32 +474,28 @@ func (sm *SystemMonitor) collectGoMetrics() {
 
 	// Envoyer les métriques
 	if err := sm.vmClient.SendMetrics(batch); err != nil {
-		utils.LogError("Erreur lors de l'envoi des métriques Go: %v", err)
+		utils.LogError("Failed to send Go metrics: %v", err)
 	}
 }
 
-// collectServerState collecte et envoie la métrique d'état du serveur
+// collectServerState collecte les métriques d'état du serveur
 func (sm *SystemMonitor) collectServerState() {
-	// Créer les labels
-	labels := map[string]string{
+	// Obtenir l'état du serveur
+	sm.state.RLock()
+	defer sm.state.RUnlock()
+
+	// Créer les labels de base
+	baseLabels := map[string]string{
 		"server_id":   sm.state.ServerID,
 		"server_name": sm.state.ServerName,
 		"server_type": sm.state.ServerType,
 	}
 
-	// Déterminer l'état actuel du serveur
-	var serverState int
-	sm.state.RLock()
-	if sm.state.ShuttingDown {
-		serverState = types.ServerStateShutdown
-	} else if sm.state.Ready {
-		serverState = types.ServerStateReady
-	} else if sm.state.Allocated {
-		serverState = types.ServerStateAllocated
-	} else {
-		serverState = types.ServerStateStarting
+	// Déterminer l'état du serveur
+	serverState := metrics.ServerStateStarting
+	if sm.state.Ready {
+		serverState = metrics.ServerStateReady
 	}
-	sm.state.RUnlock()
 
 	// Créer un lot de métriques
 	batch := types.MetricBatch{
@@ -519,7 +505,21 @@ func (sm *SystemMonitor) collectServerState() {
 				Value:       float64(serverState),
 				Type:        types.Gauge,
 				Timestamp:   time.Now(),
-				LabelValues: labels,
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.PlayersGauge.Name,
+				Value:       float64(len(sm.state.ConnectedPlayers)),
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.ServerUptime.Name,
+				Value:       time.Since(sm.state.StartTime).Seconds(),
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
 			},
 		},
 		Time: time.Now(),
@@ -527,31 +527,26 @@ func (sm *SystemMonitor) collectServerState() {
 
 	// Envoyer les métriques
 	if err := sm.vmClient.SendMetrics(batch); err != nil {
-		utils.LogError("Erreur lors de l'envoi de la métrique d'état du serveur: %v", err)
-	} else {
-		utils.LogDebug("Métrique d'état du serveur envoyée: %d", serverState)
+		utils.LogError("Failed to send server state metrics: %v", err)
 	}
 }
 
-// CalculateNetworkLatency calcule la latence réseau en effectuant un ping
+// CalculateNetworkLatency calcule la latence réseau vers un hôte
 func (sm *SystemMonitor) CalculateNetworkLatency(host string) float64 {
-	// Implémenter un ping simple pour mesurer la latence
+	// Effectuer un ping simple en mesurant le temps de réponse
 	start := time.Now()
-	conn, err := stdnet.DialTimeout("tcp", host, 2*time.Second)
+	conn, err := net.DialTimeout("tcp", host, 2*time.Second)
 	if err != nil {
-		utils.LogWarning("Erreur lors du ping vers %s: %v", host, err)
-		return 0
+		utils.LogError("Failed to connect to %s: %v", host, err)
+		return -1
 	}
 	defer conn.Close()
-
-	latency := time.Since(start).Milliseconds()
-	return float64(latency)
+	return float64(time.Since(start).Milliseconds())
 }
 
-// MonitorNetworkLatency surveille la latence réseau vers un hôte spécifique
+// MonitorNetworkLatency surveille la latence réseau vers un hôte
 func (sm *SystemMonitor) MonitorNetworkLatency(ctx context.Context, host string) {
-	// Collecter la latence toutes les 5 secondes
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -559,41 +554,44 @@ func (sm *SystemMonitor) MonitorNetworkLatency(ctx context.Context, host string)
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Calculer la latence
 			latency := sm.CalculateNetworkLatency(host)
-			if latency > 0 {
-				// Créer les labels
-				labels := map[string]string{
-					"server_id":   sm.state.ServerID,
-					"server_name": sm.state.ServerName,
-					"server_type": sm.state.ServerType,
-					"target_host": host,
-				}
+			if latency < 0 {
+				continue
+			}
 
-				// Envoyer la métrique
-				batch := types.MetricBatch{
-					Metrics: []types.Metric{
-						{
-							Name:        metrics.NetworkLatency,
-							Value:       latency,
-							Type:        types.Gauge,
-							Timestamp:   time.Now(),
-							LabelValues: labels,
-						},
+			// Créer les labels
+			labels := map[string]string{
+				"server_id":   sm.state.ServerID,
+				"server_name": sm.state.ServerName,
+				"server_type": sm.state.ServerType,
+				"target":      host,
+			}
+
+			// Envoyer la métrique
+			batch := types.MetricBatch{
+				Metrics: []types.Metric{
+					{
+						Name:        metrics.NetworkLatency.Name,
+						Value:       latency,
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: labels,
 					},
-					Time: time.Now(),
-				}
+				},
+				Time: time.Now(),
+			}
 
-				if err := sm.vmClient.SendMetrics(batch); err != nil {
-					utils.LogError("Erreur lors de l'envoi de la métrique de latence: %v", err)
-				}
+			if err := sm.vmClient.SendMetrics(batch); err != nil {
+				utils.LogError("Failed to send latency metrics: %v", err)
 			}
 		}
 	}
 }
 
-// copyLabels crée une copie des labels
+// cloneLabels crée une copie d'une map de labels
 func cloneLabels(labels map[string]string) map[string]string {
-	newLabels := make(map[string]string)
+	newLabels := make(map[string]string, len(labels))
 	for k, v := range labels {
 		newLabels[k] = v
 	}

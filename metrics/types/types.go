@@ -143,13 +143,6 @@ type LogEntry struct {
 	Error      string            `json:"error,omitempty"`
 }
 
-// Log levels
-const (
-	LogLevelInfo    = "info"
-	LogLevelWarning = "warning"
-	LogLevelError   = "error"
-)
-
 // Log représente une entrée de log à envoyer à VictoriaLogs
 type Log struct {
 	Timestamp time.Time         `json:"timestamp"`
