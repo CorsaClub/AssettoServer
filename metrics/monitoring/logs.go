@@ -3,14 +3,15 @@ package monitoring
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"metrics/metrics"
 	"metrics/models"
-	metrics "metrics/services"
 	"metrics/types"
 	"metrics/utils"
 	"metrics/victoria"
@@ -139,11 +140,15 @@ func (lm *LogMonitor) monitorLog(ctx context.Context, pattern string) {
 		case <-ctx.Done():
 			return
 		case <-time.After(5 * time.Second):
-			utils.LogInfo("Waiting for log file to be created: %s", logPath)
+			if logsClient, ok := utils.GetLogsClient(); ok {
+				logsClient.LogEvent("INFO", fmt.Sprintf("Waiting for log file to be created: %s", logPath), "log_monitor", nil)
+			}
 		}
 	}
 
-	utils.LogInfo("Monitoring log file: %s", logPath)
+	if logsClient, ok := utils.GetLogsClient(); ok {
+		logsClient.LogEvent("INFO", fmt.Sprintf("Monitoring log file: %s", logPath), "log_monitor", nil)
+	}
 
 	// Ouvrir le fichier et se positionner à la fin
 	file, err := os.Open(logPath)
@@ -332,8 +337,8 @@ func (lm *LogMonitor) processBatch(logs []models.LogEntry) {
 	if len(victoriaLogs) > 0 {
 		if err := lm.logsClient.SendLogs(victoriaLogs); err != nil {
 			utils.LogError("Failed to send logs to VictoriaLogs: %v", err)
-		} else {
-			utils.LogInfo("Successfully sent %d logs to VictoriaLogs", len(victoriaLogs))
+		} else if logsClient, ok := utils.GetLogsClient(); ok {
+			logsClient.LogEvent("INFO", fmt.Sprintf("Successfully sent %d logs to VictoriaLogs", len(victoriaLogs)), "log_monitor", nil)
 		}
 	}
 }

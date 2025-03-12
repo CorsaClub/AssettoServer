@@ -81,7 +81,7 @@ func logEvent(eventType string, message string, state *types.ServerState, additi
 
 	// Send to VictoriaLogs if available
 	if logsClient, ok := utils.GetLogsClient(); ok {
-		logsClient.LogEvent("INFO", message, eventType, labels)
+		logsClient.LogServerEvent("INFO", message, eventType, labels)
 	}
 }
 

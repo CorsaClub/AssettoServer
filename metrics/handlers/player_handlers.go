@@ -28,7 +28,14 @@ func handlePlayerConnect(state *types.ServerState, vmClient *victoria.MetricsCli
 		if err := geoipService.EnrichPlayerWithGeoIP(&player); err != nil {
 			utils.LogWarning("Failed to enrich player with GeoIP information: %v", err)
 		} else {
-			utils.LogInfo("Player %s connected from %s, %s (%s)", player.Name, player.City, player.Country, player.CountryCode)
+			if logsClient, ok := utils.GetLogsClient(); ok {
+				logsClient.LogEvent("INFO", fmt.Sprintf("Player %s connected from %s, %s (%s)", player.Name, player.City, player.Country, player.CountryCode), "player_connection", map[string]string{
+					"player_name":  player.Name,
+					"city":         player.City,
+					"country":      player.Country,
+					"country_code": player.CountryCode,
+				})
+			}
 		}
 	}
 
@@ -110,7 +117,14 @@ func handlePlayerDisconnect(state *types.ServerState, vmClient *victoria.Metrics
 	if exists && player != nil {
 		// Log player disconnection with GeoIP information if available
 		if player.Country != "" {
-			utils.LogInfo("Player %s disconnected from %s, %s (%s)", player.Name, player.City, player.Country, player.CountryCode)
+			if logsClient, ok := utils.GetLogsClient(); ok {
+				logsClient.LogEvent("INFO", fmt.Sprintf("Player %s disconnected from %s, %s (%s)", player.Name, player.City, player.Country, player.CountryCode), "player_disconnection", map[string]string{
+					"player_name":  player.Name,
+					"city":         player.City,
+					"country":      player.Country,
+					"country_code": player.CountryCode,
+				})
+			}
 		}
 	}
 

@@ -2,6 +2,7 @@
 package utils
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -108,7 +109,12 @@ func (cb *CircuitBreaker) RecordSuccess() {
 		cb.state = CircuitClosed
 		cb.halfOpenCallCount = 0
 		cb.successCount = 0
-		LogInfo("Circuit breaker %s closed after %d consecutive successes", cb.name, cb.successThreshold)
+		if logsClient, ok := GetLogsClient(); ok {
+			logsClient.LogEvent("INFO", fmt.Sprintf("Circuit breaker %s closed after %d consecutive successes", cb.name, cb.successThreshold), "circuit_breaker", map[string]string{
+				"name":  cb.name,
+				"state": "closed",
+			})
+		}
 	}
 }
 
@@ -127,7 +133,12 @@ func (cb *CircuitBreaker) AllowRequest() bool {
 			cb.state = CircuitHalfOpen
 			cb.halfOpenCallCount = 0
 			cb.successCount = 0
-			LogInfo("Circuit breaker %s half-opened after timeout of %v", cb.name, cb.timeout)
+			if logsClient, ok := GetLogsClient(); ok {
+				logsClient.LogEvent("INFO", fmt.Sprintf("Circuit breaker %s half-opened after timeout of %v", cb.name, cb.timeout), "circuit_breaker", map[string]string{
+					"name":  cb.name,
+					"state": "half-open",
+				})
+			}
 			return true
 		}
 		return false
@@ -158,7 +169,12 @@ func (cb *CircuitBreaker) Reset() {
 	cb.successCount = 0
 	cb.halfOpenCallCount = 0
 	cb.state = CircuitClosed
-	LogInfo("Circuit breaker %s manually reset", cb.name)
+	if logsClient, ok := GetLogsClient(); ok {
+		logsClient.LogEvent("INFO", fmt.Sprintf("Circuit breaker %s manually reset", cb.name), "circuit_breaker", map[string]string{
+			"name":  cb.name,
+			"state": "closed",
+		})
+	}
 }
 
 // GetStats returns statistics about the circuit breaker.

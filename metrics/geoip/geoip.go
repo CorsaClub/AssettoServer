@@ -3,6 +3,7 @@ package geoip
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -51,7 +52,9 @@ func (g *GeoIPService) Initialize() error {
 
 	g.db = db
 	g.initialized = true
-	utils.LogInfo("GeoIP database initialized: %s", g.dbPath)
+	if logsClient, ok := utils.GetLogsClient(); ok {
+		logsClient.LogEvent("INFO", fmt.Sprintf("GeoIP database initialized: %s", g.dbPath), "geoip", nil)
+	}
 	return nil
 }
 
@@ -126,8 +129,10 @@ func (g *GeoIPService) EnrichPlayerWithGeoIP(player *types.Player) error {
 
 // InitGeoIPService initializes the GeoIP service from the configuration.
 func InitGeoIPService(cfg *config.GeoIPConfig) (*GeoIPService, error) {
+	logsClient, _ := utils.GetLogsClient()
+
 	if !cfg.Enabled {
-		utils.LogInfo("GeoIP service is disabled")
+		logsClient.LogEvent("INFO", "GeoIP service is disabled", "geoip", nil)
 		return nil, nil
 	}
 
@@ -140,6 +145,6 @@ func InitGeoIPService(cfg *config.GeoIPConfig) (*GeoIPService, error) {
 		return nil, err
 	}
 
-	utils.LogInfo("GeoIP service initialized successfully")
+	logsClient.LogEvent("INFO", "GeoIP service initialized successfully", "geoip", nil)
 	return service, nil
 }

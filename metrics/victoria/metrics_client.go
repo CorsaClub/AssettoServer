@@ -414,8 +414,11 @@ func (c *MetricsClient) SendMetricsImmediate(batch types.MetricBatch) error {
 		}
 	}
 
+	if logsClient, ok := utils.GetLogsClient(); ok {
+		logsClient.LogEvent("INFO", "Sending metrics immediately (bypassing buffer)", "metrics", nil)
+	}
+
 	// Send directly to VictoriaMetrics
-	utils.LogInfo("Sending metrics immediately (bypassing buffer)")
 	return c.sendToVictoriaMetrics(batch)
 }
 
@@ -646,7 +649,9 @@ func (c *MetricsClient) logMetricFormat(batch types.MetricBatch) {
 		builder.WriteString("\n")
 	}
 
-	utils.LogInfo("%s", builder.String())
+	if logsClient, ok := utils.GetLogsClient(); ok {
+		logsClient.LogEvent("INFO", builder.String(), "metrics_format", nil)
+	}
 }
 
 // Helper function for min
@@ -659,7 +664,9 @@ func min(a, b int) int {
 
 // StartMetricBuffer starts processing metrics in the background
 func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
-	utils.LogInfo("Metrics system ready (OK)")
+	if logsClient, ok := utils.GetLogsClient(); ok {
+		logsClient.LogEvent("INFO", "Metrics system ready (OK)", "metrics", nil)
+	}
 	ticker := time.NewTicker(c.config.Metrics.FlushInterval)
 	defer ticker.Stop()
 

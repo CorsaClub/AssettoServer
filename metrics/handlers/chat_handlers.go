@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"strings"
 
 	"metrics/metrics"
@@ -97,13 +96,15 @@ func handleChatMessage(output string, state *types.ServerState, labels map[strin
 		"session_type": sessionType,
 		"session_id":   sessionID,
 		"event_type":   "chat_message", // Ajouter un label spécifique pour les messages de chat
+		"server_id":    labels["server_id"],
+		"server_name":  labels["server_name"],
+		"server_type":  labels["server_type"],
 	}
 
-	// Créer un message formaté pour les logs
-	formattedMessage := fmt.Sprintf("[CHAT] %s: %s", playerName, messageContent)
-
-	// Envoyer le log avec le message formaté
-	logEvent("chat_message", formattedMessage, state, chatLabels)
+	// Envoyer directement à VictoriaLogs comme message de chat
+	if logsClient, ok := utils.GetLogsClient(); ok {
+		logsClient.LogChatMessage(playerName, messageContent, chatLabels)
+	}
 }
 
 // determineChatType determines the type of chat message based on its content.

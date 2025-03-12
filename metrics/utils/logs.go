@@ -6,7 +6,12 @@ import (
 
 // LogsClient interface defines the methods required for a logs client
 type LogsClient interface {
+	// LogEvent envoie un log du wrapper
 	LogEvent(level, message string, eventType string, labels map[string]string) error
+	// LogServerEvent envoie un log du serveur Assetto Corsa
+	LogServerEvent(level, message string, eventType string, labels map[string]string) error
+	// LogChatMessage envoie un message de chat
+	LogChatMessage(playerName, message string, labels map[string]string) error
 }
 
 var (

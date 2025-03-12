@@ -29,6 +29,8 @@ var (
 	CurrentLogLevel = LogLevelInfo
 	// EnableDebugLogs controls whether debug logs are enabled
 	EnableDebugLogs = false
+	// DisableConsoleOutput contrôle si les logs sont affichés dans la console
+	DisableConsoleOutput = true
 )
 
 func init() {
@@ -39,6 +41,11 @@ func init() {
 	if os.Getenv("DEBUG_LOGS") == "true" {
 		EnableDebugLogs = true
 		CurrentLogLevel = LogLevelDebug
+	}
+
+	// Check if console output is enabled via environment variable
+	if os.Getenv("ENABLE_CONSOLE_LOGS") == "true" {
+		DisableConsoleOutput = false
 	}
 }
 
@@ -56,9 +63,13 @@ const (
 func LogSDK(format string, v ...interface{}) {
 	timestamp := time.Now().Format("15:04:05")
 	message := fmt.Sprintf(format, v...)
-	log.Printf(LogFormatSDK, timestamp, message)
 
-	// Also send to logs client if available
+	// Afficher dans la console uniquement si activé
+	if !DisableConsoleOutput {
+		log.Printf(LogFormatSDK, timestamp, message)
+	}
+
+	// Always send to logs client if available
 	sendToLogsClient("info", message, "sdk", nil)
 }
 
@@ -70,9 +81,13 @@ func LogInfo(format string, v ...interface{}) {
 
 	timestamp := time.Now().Format("15:04:05")
 	message := fmt.Sprintf(format, v...)
-	log.Printf(LogFormatINF, timestamp, message)
 
-	// Also send to logs client if available
+	// Afficher dans la console uniquement si activé
+	if !DisableConsoleOutput {
+		log.Printf(LogFormatINF, timestamp, message)
+	}
+
+	// Always send to logs client if available
 	sendToLogsClient("info", message, "info", nil)
 }
 
@@ -84,9 +99,13 @@ func LogDebug(format string, v ...interface{}) {
 
 	timestamp := time.Now().Format("15:04:05")
 	message := fmt.Sprintf(format, v...)
-	log.Printf(LogFormatDBG, timestamp, message)
 
-	// Also send to logs client if available
+	// Afficher dans la console uniquement si activé
+	if !DisableConsoleOutput {
+		log.Printf(LogFormatDBG, timestamp, message)
+	}
+
+	// Always send to logs client if available
 	sendToLogsClient("debug", message, "debug", nil)
 }
 
@@ -98,9 +117,13 @@ func LogWarning(format string, v ...interface{}) {
 
 	timestamp := time.Now().Format("15:04:05")
 	message := fmt.Sprintf(format, v...)
-	log.Printf(LogFormatWRN, timestamp, message)
 
-	// Also send to logs client if available
+	// Afficher dans la console uniquement si activé
+	if !DisableConsoleOutput {
+		log.Printf(LogFormatWRN, timestamp, message)
+	}
+
+	// Always send to logs client if available
 	sendToLogsClient("warning", message, "warning", nil)
 }
 
@@ -112,7 +135,11 @@ func LogError(format string, v ...interface{}) {
 
 	timestamp := time.Now().Format("15:04:05")
 	message := fmt.Sprintf(format, v...)
-	log.Printf(LogFormatERR, timestamp, message)
+
+	// Afficher dans la console uniquement si activé
+	if !DisableConsoleOutput {
+		log.Printf(LogFormatERR, timestamp, message)
+	}
 
 	// Get caller information for better error context
 	_, file, line, ok := runtime.Caller(1)
@@ -124,7 +151,7 @@ func LogError(format string, v ...interface{}) {
 		}
 	}
 
-	// Also send to logs client if available
+	// Always send to logs client if available
 	sendToLogsClient("error", message, "error", callerInfo)
 }
 
@@ -132,6 +159,8 @@ func LogError(format string, v ...interface{}) {
 func LogFatal(format string, v ...interface{}) {
 	timestamp := time.Now().Format("15:04:05")
 	message := fmt.Sprintf(format, v...)
+
+	// Les logs fatals sont toujours affichés dans la console
 	log.Printf(LogFormatFTL, timestamp, message)
 
 	// Get caller information for better error context
@@ -144,7 +173,7 @@ func LogFatal(format string, v ...interface{}) {
 		}
 	}
 
-	// Also send to logs client if available
+	// Always send to logs client if available
 	sendToLogsClient("fatal", message, "fatal", callerInfo)
 
 	// Exit the program with error code

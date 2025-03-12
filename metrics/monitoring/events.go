@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"metrics/types"
-	"metrics/utils"
 	"metrics/victoria"
 )
 
@@ -149,7 +148,7 @@ func (cs *CollisionStats) GetMetrics(serverID string, sessionID string, sessionT
 
 // MonitorServerEvents surveille les événements du serveur
 func MonitorServerEvents(ctx context.Context, metricsClient *victoria.MetricsClient, logsClient victoria.LogsClient, serverState *types.ServerState, eventChan <-chan string) {
-	utils.LogInfo("Démarrage du monitoring des événements")
+	logsClient.LogEvent("INFO", "Starting event monitoring", "monitoring", nil)
 
 	for {
 		select {
@@ -157,7 +156,7 @@ func MonitorServerEvents(ctx context.Context, metricsClient *victoria.MetricsCli
 			return
 		case event := <-eventChan:
 			// Envoyer tous les événements à VictoriaLogs
-			logsClient.LogEvent("INFO", event, "server_event", map[string]string{
+			logsClient.LogServerEvent("INFO", event, "server_event", map[string]string{
 				"server_id": serverState.ServerID,
 				"raw_event": "true",
 			})

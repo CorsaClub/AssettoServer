@@ -1,0 +1,167 @@
+package process
+
+import (
+	"context"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"syscall"
+
+	"metrics/handlers"
+	"metrics/types"
+	"metrics/victoria"
+	"metrics/websocket"
+)
+
+// interceptor implements an io.Writer that intercepts and forwards written data
+type interceptor struct {
+	forward   io.Writer
+	intercept func(p []byte)
+}
+
+func (i *interceptor) Write(p []byte) (n int, err error) {
+	if i.intercept != nil {
+		i.intercept(p)
+	}
+	if i.forward != nil {
+		return i.forward.Write(p)
+	}
+	return len(p), nil
+}
+
+// StartServer prepares and starts the server process
+func StartServer(ctx context.Context, input, args string, state *types.ServerState,
+	metricsClient *victoria.MetricsClient, wsServer *websocket.WebSocketServer,
+	logsClient victoria.LogsClient) *exec.Cmd {
+
+	// Parse arguments
+	argsList := strings.Fields(args)
+	cmd := exec.CommandContext(ctx, input, argsList...)
+
+	// Set working directory
+	cmd.Dir = "/app"
+
+	// Set environment variables
+	cmd.Env = os.Environ()
+
+	// Configure output interception
+	showServerLogs := os.Getenv("SHOW_SERVER_LOGS") == "true"
+	var stderrForward, stdoutForward io.Writer
+	if showServerLogs {
+		stderrForward = os.Stderr
+		stdoutForward = os.Stdout
+	}
+
+	// Setup stderr interceptor
+	cmd.Stderr = &interceptor{
+		forward: stderrForward,
+		intercept: func(p []byte) {
+			str := strings.TrimSpace(string(p))
+			logsClient.LogServerEvent("ERROR", str, "server_error", map[string]string{
+				"server_id":  state.ServerID,
+				"session_id": state.CurrentSession.ID,
+			})
+		},
+	}
+
+	// Setup stdout interceptor
+	serverReady := make(chan struct{})
+	cmd.Stdout = &interceptor{
+		forward: stdoutForward,
+		intercept: func(p []byte) {
+			str := strings.TrimSpace(string(p))
+
+			// Determine log level and type
+			logLevel := "INFO"
+			eventType := "server_output"
+
+			if strings.Contains(str, "CHAT") {
+				handleChatMessage(str, state, logsClient)
+			} else {
+				// Detect errors and warnings
+				if strings.Contains(str, "ERROR") {
+					logLevel = "ERROR"
+					eventType = "error"
+				} else if strings.Contains(str, "Warning") || strings.Contains(str, "WARNING") {
+					logLevel = "WARNING"
+					eventType = "warning"
+				}
+
+				// Log to VictoriaLogs
+				logsClient.LogServerEvent(logLevel, str, eventType, map[string]string{
+					"server_id":  state.ServerID,
+					"session_id": state.CurrentSession.ID,
+				})
+			}
+
+			// Create log entry for WebSocket
+			logEntry := types.LogEntry{
+				Timestamp: state.LastPing,
+				Level:     logLevel,
+				Message:   str,
+				ServerID:  state.ServerID,
+				SessionID: state.CurrentSession.ID,
+			}
+
+			// Send to WebSocket
+			wsServer.BroadcastLog(logEntry)
+
+			// Process the output
+			handlers.HandleServerOutput(str, metricsClient, state, serverReady, nil, nil)
+		},
+	}
+
+	// Start the process
+	if err := cmd.Start(); err != nil {
+		logsClient.LogEvent("ERROR", "Failed to start server process: "+err.Error(), "server_start", nil)
+	} else {
+		logsClient.LogEvent("INFO", "Server process started", "server_start", map[string]string{
+			"pid": string(cmd.Process.Pid),
+		})
+	}
+
+	return cmd
+}
+
+// MonitorExit monitors the exit of the server process
+func MonitorExit(cmd *exec.Cmd, logsClient victoria.LogsClient) {
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			logsClient.LogEvent("ERROR", "Server process exited with error", "process_exit", map[string]string{
+				"exit_code": string(exitErr.ExitCode()),
+				"error":     err.Error(),
+			})
+		} else {
+			logsClient.LogEvent("ERROR", "Server process exited with error: "+err.Error(), "process_exit", nil)
+		}
+
+		if os.Getenv("TEST_MODE") != "true" {
+			// Signal termination
+			p, err := os.FindProcess(os.Getpid())
+			if err == nil {
+				p.Signal(syscall.SIGTERM)
+			}
+		}
+	} else {
+		logsClient.LogEvent("INFO", "Server process exited normally", "process_exit", nil)
+	}
+}
+
+// handleChatMessage processes chat messages
+func handleChatMessage(str string, state *types.ServerState, logsClient victoria.LogsClient) {
+	// Format typique: [CHAT] PlayerName: message
+	parts := strings.SplitN(str, "]", 2)
+	if len(parts) == 2 {
+		chatParts := strings.SplitN(strings.TrimSpace(parts[1]), ":", 2)
+		if len(chatParts) == 2 {
+			playerName := strings.TrimSpace(chatParts[0])
+			message := strings.TrimSpace(chatParts[1])
+
+			logsClient.LogChatMessage(playerName, message, map[string]string{
+				"server_id":  state.ServerID,
+				"session_id": state.CurrentSession.ID,
+			})
+		}
+	}
+}

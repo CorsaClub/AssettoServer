@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -109,7 +110,11 @@ func (s *WebSocketServer) HandleWebSocket(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	utils.LogInfo("Client authenticated successfully: SteamID=%s", authMsg.SteamID)
+	if logsClient, ok := utils.GetLogsClient(); ok {
+		logsClient.LogEvent("INFO", fmt.Sprintf("Client authenticated successfully: SteamID=%s", authMsg.SteamID), "websocket", map[string]string{
+			"steam_id": authMsg.SteamID,
+		})
+	}
 
 	// Envoyer confirmation d'authentification
 	conn.WriteJSON(map[string]string{"status": "authenticated"})

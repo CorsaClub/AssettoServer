@@ -373,8 +373,7 @@ func logServerOutput(output string, state *types.ServerState) {
 	} else if strings.Contains(output, "CHAT") {
 		eventType = "chat_message"
 		// Les messages de chat sont traités séparément par handleChatMessage
-		// Nous ne faisons qu'un log basique ici pour éviter les doublons
-		utils.LogInfo("[CHAT] Raw message: %s", output)
+		// Nous ne faisons aucun log ici pour éviter les doublons
 		return
 	} else if strings.Contains(output, "CONNECTED") {
 		eventType = "player_connect"
@@ -414,9 +413,6 @@ func logServerOutput(output string, state *types.ServerState) {
 
 	// Send to VictoriaLogs if available
 	if logsClient, ok := utils.GetLogsClient(); ok {
-		logsClient.LogEvent(level, output, eventType, labels)
+		logsClient.LogServerEvent(level, output, eventType, labels)
 	}
-
-	// Also log to standard output for debugging
-	utils.LogInfo("[%s] %s", eventType, output)
 }

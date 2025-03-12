@@ -223,7 +223,9 @@ func MonitorSystemResources(ctx context.Context, state *types.ServerState) {
 
 // gracefulShutdown initiates a graceful shutdown of the server
 func gracefulShutdown(cancel context.CancelFunc, state *types.ServerState) {
-	utils.LogInfo("Initiating graceful shutdown")
+	if logsClient, ok := utils.GetLogsClient(); ok {
+		logsClient.LogEvent("INFO", "Initiating graceful shutdown", "shutdown", nil)
+	}
 
 	// Update server state
 	state.Lock()

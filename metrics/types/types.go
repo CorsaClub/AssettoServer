@@ -149,7 +149,8 @@ type Log struct {
 	Level     string            `json:"level"`
 	Message   string            `json:"message"`
 	Source    string            `json:"source"`
-	Labels    map[string]string `json:"-"` // Les labels seront ajoutés comme champs individuels
+	LogType   string            `json:"log_type"` // Type de log: server, wrapper, chat
+	Labels    map[string]string `json:"-"`        // Les labels seront ajoutés comme champs individuels
 }
 
 // GeoLocation represents geolocation information for an IP address.
