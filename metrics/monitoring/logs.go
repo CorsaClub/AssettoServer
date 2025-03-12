@@ -195,6 +195,9 @@ func (lm *LogMonitor) monitorLog(ctx context.Context, pattern string) {
 				continue
 			}
 
+			// Afficher les logs du serveur dans la console
+			utils.LogServerOutput(line)
+
 			// Appeler le callback si défini
 			if lm.lineCallback != nil {
 				lm.lineCallback(line)

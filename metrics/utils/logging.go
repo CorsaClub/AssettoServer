@@ -31,6 +31,8 @@ var (
 	EnableDebugLogs = false
 	// DisableConsoleOutput contrôle si les logs sont affichés dans la console
 	DisableConsoleOutput = true
+	// ShowServerLogsInConsole contrôle si les logs d'AssettoServer sont affichés dans la console
+	ShowServerLogsInConsole = true
 )
 
 func init() {
@@ -47,6 +49,11 @@ func init() {
 	if os.Getenv("ENABLE_CONSOLE_LOGS") == "true" {
 		DisableConsoleOutput = false
 	}
+
+	// Check if server logs should be shown in console
+	if os.Getenv("SHOW_SERVER_LOGS") == "false" {
+		ShowServerLogsInConsole = false
+	}
 }
 
 // Log formats for different log levels
@@ -57,7 +64,16 @@ const (
 	LogFormatWRN = "[%s WRN] %s"
 	LogFormatERR = "[%s ERR] %s"
 	LogFormatFTL = "[%s FTL] %s"
+	LogFormatSRV = "[%s SRV] %s" // Format pour les logs du serveur
 )
+
+// LogServerOutput logs server output with appropriate formatting
+func LogServerOutput(output string) {
+	if ShowServerLogsInConsole {
+		timestamp := time.Now().Format("15:04:05")
+		log.Printf(LogFormatSRV, timestamp, output)
+	}
+}
 
 // LogSDK logs a message at the SDK level
 func LogSDK(format string, v ...interface{}) {
@@ -73,7 +89,7 @@ func LogSDK(format string, v ...interface{}) {
 	sendToLogsClient("info", message, "sdk", nil)
 }
 
-// LogInfo logs a message at the INFO level
+// LogInfo logs a message to the console and the logs client at the INFO level
 func LogInfo(format string, v ...interface{}) {
 	if CurrentLogLevel > LogLevelInfo {
 		return
@@ -91,7 +107,7 @@ func LogInfo(format string, v ...interface{}) {
 	sendToLogsClient("info", message, "info", nil)
 }
 
-// LogDebug logs a message at the DEBUG level
+// LogDebug logs a message to the console and the logs client at the DEBUG level
 func LogDebug(format string, v ...interface{}) {
 	if !EnableDebugLogs || CurrentLogLevel > LogLevelDebug {
 		return
@@ -109,7 +125,7 @@ func LogDebug(format string, v ...interface{}) {
 	sendToLogsClient("debug", message, "debug", nil)
 }
 
-// LogWarning logs a message at the WARNING level
+// LogWarning logs a message to the console and the logs client at the WARNING level
 func LogWarning(format string, v ...interface{}) {
 	if CurrentLogLevel > LogLevelWarning {
 		return
@@ -127,7 +143,7 @@ func LogWarning(format string, v ...interface{}) {
 	sendToLogsClient("warning", message, "warning", nil)
 }
 
-// LogError logs a message at the ERROR level
+// LogError logs a message to the console and the logs client at the ERROR level
 func LogError(format string, v ...interface{}) {
 	if CurrentLogLevel > LogLevelError {
 		return
