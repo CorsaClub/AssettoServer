@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -32,7 +33,7 @@ var (
 	// DisableConsoleOutput contrôle si les logs sont affichés dans la console
 	DisableConsoleOutput = true
 	// ShowServerLogsInConsole contrôle si les logs d'AssettoServer sont affichés dans la console
-	ShowServerLogsInConsole = true
+	ShowServerLogsInConsole bool
 )
 
 func init() {
@@ -50,8 +51,11 @@ func init() {
 		DisableConsoleOutput = false
 	}
 
-	// Check if server logs should be shown in console
-	if os.Getenv("SHOW_SERVER_LOGS") == "false" {
+	// Par défaut, on affiche les logs du serveur
+	ShowServerLogsInConsole = true
+
+	// Désactiver les logs du serveur si la variable d'environnement est définie
+	if os.Getenv("DISABLE_SERVER_LOGS") == "true" {
 		ShowServerLogsInConsole = false
 	}
 }
@@ -69,9 +73,24 @@ const (
 
 // LogServerOutput logs server output with appropriate formatting
 func LogServerOutput(output string) {
+	// Les logs du serveur sont toujours affichés sauf si explicitement désactivés
 	if ShowServerLogsInConsole {
 		timestamp := time.Now().Format("15:04:05")
-		log.Printf(LogFormatSRV, timestamp, output)
+		// Déterminer le niveau de log pour le formatage
+		var format string
+		switch {
+		case strings.Contains(strings.ToUpper(output), "ERROR"):
+			format = LogFormatERR
+		case strings.Contains(strings.ToUpper(output), "WARN"):
+			format = LogFormatWRN
+		case strings.Contains(strings.ToUpper(output), "DEBUG"):
+			format = LogFormatDBG
+		default:
+			format = LogFormatSRV
+		}
+
+		// Toujours utiliser log.Print pour les logs du serveur
+		log.Printf(format, timestamp, output)
 	}
 }
 
