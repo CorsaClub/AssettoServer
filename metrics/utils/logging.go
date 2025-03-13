@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 	"runtime"
-	"strings"
 	"time"
 )
 
@@ -73,30 +72,9 @@ const (
 
 // LogServerOutput logs server output with appropriate formatting
 func LogServerOutput(output string) {
-	// Les logs du serveur sont toujours affichés sauf si explicitement désactivés
-	if ShowServerLogsInConsole {
-		timestamp := time.Now().Format("15:04:05")
+	// Ne plus afficher dans la console car la sortie brute est déjà envoyée via l'intercepteur
 
-		// Déterminer le niveau de log pour le formatage
-		var format string
-		switch {
-		case strings.Contains(strings.ToUpper(output), "ERROR"):
-			format = LogFormatERR
-		case strings.Contains(strings.ToUpper(output), "WARN"):
-			format = LogFormatWRN
-		case strings.Contains(strings.ToUpper(output), "DEBUG"):
-			format = LogFormatDBG
-		case strings.Contains(strings.ToUpper(output), "INFO"):
-			format = LogFormatINF
-		default:
-			format = LogFormatSRV
-		}
-
-		// Toujours afficher le log, même si c'est une sortie non gérée
-		log.Printf(format, timestamp, output)
-	}
-
-	// Envoyer également à VictoriaLogs
+	// Envoyer à VictoriaLogs uniquement
 	sendToLogsClient("info", output, "server_output", map[string]string{
 		"source": "assetto_server",
 	})

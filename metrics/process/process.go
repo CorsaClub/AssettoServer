@@ -46,16 +46,8 @@ func StartServer(ctx context.Context, input, args string, state *types.ServerSta
 	cmd.Env = os.Environ()
 
 	// Configure output interception
-	showServerLogs := os.Getenv("SHOW_SERVER_LOGS") == "true"
-	var stderrForward, stdoutForward io.Writer
-	if showServerLogs {
-		stderrForward = os.Stderr
-		stdoutForward = os.Stdout
-	}
-
-	// Setup stderr interceptor
 	cmd.Stderr = &interceptor{
-		forward: stderrForward,
+		forward: os.Stderr,
 		intercept: func(p []byte) {
 			str := strings.TrimSpace(string(p))
 			logsClient.LogServerEvent("ERROR", str, "server_error", map[string]string{
@@ -68,32 +60,31 @@ func StartServer(ctx context.Context, input, args string, state *types.ServerSta
 	// Setup stdout interceptor
 	serverReady := make(chan struct{})
 	cmd.Stdout = &interceptor{
-		forward: stdoutForward,
+		forward: os.Stdout,
 		intercept: func(p []byte) {
 			str := strings.TrimSpace(string(p))
 
-			// Determine log level and type
-			logLevel := "INFO"
-			eventType := "server_output"
-
+			// Traiter les messages spéciaux (chat, etc.)
 			if strings.Contains(str, "CHAT") {
 				handleChatMessage(str, state, logsClient)
-			} else {
-				// Detect errors and warnings
-				if strings.Contains(str, "ERROR") {
-					logLevel = "ERROR"
-					eventType = "error"
-				} else if strings.Contains(str, "Warning") || strings.Contains(str, "WARNING") {
-					logLevel = "WARNING"
-					eventType = "warning"
-				}
-
-				// Log to VictoriaLogs
-				logsClient.LogServerEvent(logLevel, str, eventType, map[string]string{
-					"server_id":  state.ServerID,
-					"session_id": state.CurrentSession.ID,
-				})
 			}
+
+			// Déterminer le niveau de log pour VictoriaLogs
+			logLevel := "INFO"
+			eventType := "server_output"
+			if strings.Contains(str, "ERROR") {
+				logLevel = "ERROR"
+				eventType = "error"
+			} else if strings.Contains(str, "Warning") || strings.Contains(str, "WARNING") {
+				logLevel = "WARNING"
+				eventType = "warning"
+			}
+
+			// Envoyer à VictoriaLogs
+			logsClient.LogServerEvent(logLevel, str, eventType, map[string]string{
+				"server_id":  state.ServerID,
+				"session_id": state.CurrentSession.ID,
+			})
 
 			// Create log entry for WebSocket
 			logEntry := types.LogEntry{
