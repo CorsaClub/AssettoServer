@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 
+	"metrics/env"
 	"metrics/handlers"
 	"metrics/types"
 	"metrics/victoria"
@@ -127,7 +128,9 @@ func MonitorExit(cmd *exec.Cmd, logsClient victoria.LogsClient) {
 			logsClient.LogEvent("ERROR", "Server process exited with error: "+err.Error(), "process_exit", nil)
 		}
 
-		if os.Getenv("TEST_MODE") != "true" {
+		envVars := env.GetEnv()
+
+		if !envVars.TestMode {
 			// Signal termination
 			p, err := os.FindProcess(os.Getpid())
 			if err == nil {

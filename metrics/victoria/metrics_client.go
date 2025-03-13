@@ -8,7 +8,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 	"io"
 
 	"metrics/config"
+	"metrics/env"
 	"metrics/models"
 	"metrics/types"
 	"metrics/utils"
@@ -302,26 +302,43 @@ func validateLabels(labels map[string]string, cfg *config.MetricsConfig) error {
 
 // NewClient creates a new VictoriaMetrics client
 func NewClient(cfg *config.Config) *MetricsClient {
+	// Get environment variables
+	envVars := env.GetEnv()
+
 	// Configure VictoriaMetrics URL from environment variables if available
-	if url := os.Getenv("VICTORIA_URL"); url != "" {
-		if port := os.Getenv("VICTORIA_PORT"); port != "" {
+	if envVars.VictoriaMetricsURL != "" {
+		url := envVars.GetVictoriaMetricsURL()
+		cfg.Victoria.URL = url
+		fmt.Printf("[DEBUG] VictoriaMetrics URL set from environment: %s\n", url)
+	} else if url := envVars.VictoriaMetricsURL; url != "" {
+		// Legacy support
+		if port := envVars.VictoriaMetricsPort; port != "" {
 			cfg.Victoria.URL = fmt.Sprintf("http://%s:%s", url, port)
 		} else {
 			cfg.Victoria.URL = fmt.Sprintf("http://%s:%s", url, config.DefaultVictoriaPort)
 		}
-		fmt.Printf("[DEBUG] VictoriaMetrics URL set from environment: %s\n", cfg.Victoria.URL)
+		fmt.Printf("[DEBUG] VictoriaMetrics URL set from legacy environment variables: %s\n", cfg.Victoria.URL)
 	} else {
 		fmt.Printf("[DEBUG] Using default VictoriaMetrics URL: %s\n", cfg.Victoria.URL)
 	}
 
 	// Configure credentials from environment variables if available
-	if user := os.Getenv("VICTORIA_USERNAME"); user != "" {
-		cfg.Victoria.Username = user
+	if envVars.VictoriaMetricsUsername != "" {
+		cfg.Victoria.Username = envVars.VictoriaMetricsUsername
 		fmt.Println("[DEBUG] VictoriaMetrics username set from environment")
+	} else if user := envVars.VictoriaMetricsUsername; user != "" {
+		// Legacy support
+		cfg.Victoria.Username = user
+		fmt.Println("[DEBUG] VictoriaMetrics username set from legacy environment variables")
 	}
-	if pass := os.Getenv("VICTORIA_PASSWORD"); pass != "" {
-		cfg.Victoria.Password = pass
+
+	if envVars.VictoriaMetricsPassword != "" {
+		cfg.Victoria.Password = envVars.VictoriaMetricsPassword
 		fmt.Println("[DEBUG] VictoriaMetrics password set from environment")
+	} else if pass := envVars.VictoriaMetricsPassword; pass != "" {
+		// Legacy support
+		cfg.Victoria.Password = pass
+		fmt.Println("[DEBUG] VictoriaMetrics password set from legacy environment variables")
 	}
 
 	transport := &http.Transport{
@@ -442,17 +459,19 @@ func (c *MetricsClient) SendLogs(logs []models.LogEntry) error {
 
 // sendToVictoriaMetrics sends data to VictoriaMetrics
 func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
+	envVars := env.GetEnv()
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Victoria.RequestTimeout)
 	defer cancel()
 
 	// Get server ID from environment or generate one
-	serverID := os.Getenv("GAMESERVER_ID")
+	serverID := envVars.GameServerID
 	if serverID == "" {
 		serverID = "unknown"
 	}
 
 	// Log debug information
-	if os.Getenv("DEBUG_LOGS") == "true" {
+	if envVars.DebugLogs {
 		fmt.Printf("[DEBUG] Sending %d metrics to VictoriaMetrics at %s using Prometheus exposition format\n", len(batch.Metrics), c.URL)
 	}
 
@@ -481,7 +500,7 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 
 	// Create request with the correct endpoint for Prometheus exposition format
 	url := fmt.Sprintf("%s/api/v1/import/prometheus", c.URL)
-	if os.Getenv("DEBUG_LOGS") == "true" {
+	if envVars.DebugLogs {
 		fmt.Printf("[DEBUG] Using endpoint for metrics: %s\n", url)
 
 		// Log a sample of the data being sent
@@ -508,27 +527,67 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 		req.SetBasicAuth(c.Username, c.Password)
 	}
 
+	// Log request details
+	if envVars.DebugLogs {
+		fmt.Printf("[DEBUG] HTTP Request details:\n")
+		fmt.Printf("  Method: %s\n", req.Method)
+		fmt.Printf("  URL: %s\n", req.URL.String())
+		fmt.Printf("  Headers:\n")
+		for key, values := range req.Header {
+			for _, value := range values {
+				fmt.Printf("    %s: %s\n", key, value)
+			}
+		}
+		if c.Username != "" {
+			fmt.Printf("  Authentication: Basic (username: %s)\n", c.Username)
+		}
+	}
+
 	// Send request
+	startTime := time.Now()
 	resp, err := c.client.Do(req)
+	requestDuration := time.Since(startTime)
+
 	if err != nil {
-		if os.Getenv("DEBUG_LOGS") == "true" {
-			fmt.Printf("[DEBUG] Error sending metrics to VictoriaMetrics: %v\n", err)
+		if envVars.DebugLogs {
+			fmt.Printf("[DEBUG] Error sending metrics to VictoriaMetrics: %v (took %v)\n", err, requestDuration)
 		}
 		return fmt.Errorf("error sending metrics: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// Log response details
+	if envVars.DebugLogs {
+		fmt.Printf("[DEBUG] HTTP Response details:\n")
+		fmt.Printf("  Status: %s\n", resp.Status)
+		fmt.Printf("  Status Code: %d\n", resp.StatusCode)
+		fmt.Printf("  Request Duration: %v\n", requestDuration)
+		fmt.Printf("  Headers:\n")
+		for key, values := range resp.Header {
+			for _, value := range values {
+				fmt.Printf("    %s: %s\n", key, value)
+			}
+		}
+	}
+
 	// Check response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
-		if os.Getenv("DEBUG_LOGS") == "true" {
+		if envVars.DebugLogs {
 			fmt.Printf("[DEBUG] VictoriaMetrics returned status %d: %s\n", resp.StatusCode, string(respBody))
 		}
 		return fmt.Errorf("unexpected status code: %d - %s", resp.StatusCode, string(respBody))
 	}
 
-	if os.Getenv("DEBUG_LOGS") == "true" {
-		fmt.Printf("[DEBUG] Successfully sent %d metrics to VictoriaMetrics\n", len(batch.Metrics))
+	// Read response body for debugging
+	if envVars.DebugLogs {
+		respBody, _ := io.ReadAll(resp.Body)
+		if len(respBody) > 0 {
+			fmt.Printf("[DEBUG] Response body: %s\n", string(respBody))
+		} else {
+			fmt.Printf("[DEBUG] Response body is empty\n")
+		}
+		fmt.Printf("[DEBUG] Successfully sent %d metrics to VictoriaMetrics (took %v)\n", len(batch.Metrics), requestDuration)
 	}
 
 	return nil
@@ -577,8 +636,10 @@ func (c *MetricsClient) flushMetrics(batch types.MetricBatch) error {
 
 // processMetric processes a metric before sending
 func (c *MetricsClient) processMetric(metric *types.Metric) error {
+	envVars := env.GetEnv()
+
 	// Get server ID from environment
-	serverID := os.Getenv("GAMESERVER_ID")
+	serverID := envVars.GameServerID
 	if serverID == "" {
 		serverID = "unknown"
 	}
@@ -652,7 +713,8 @@ func (c *MetricsClient) GetErrorCount(errorCode string) int {
 // logMetricFormat logs the format of metrics for debugging
 func (c *MetricsClient) logMetricFormat(batch types.MetricBatch) {
 	// Only log format if debug mode is active
-	if os.Getenv("DEBUG_METRICS") != "true" {
+	envVars := env.GetEnv()
+	if !envVars.DebugMetrics {
 		return
 	}
 
@@ -765,6 +827,8 @@ func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
 
 // TestConnection tests the connection to VictoriaMetrics
 func (c *MetricsClient) TestConnection() error {
+	envVars := env.GetEnv()
+
 	// Create a test metric
 	testMetric := types.Metric{
 		Name:      "test_connection",
@@ -798,7 +862,7 @@ func (c *MetricsClient) TestConnection() error {
 		return fmt.Errorf("failed to send test metric to VictoriaMetrics: %w", err)
 	}
 
-	if os.Getenv("DEBUG_LOGS") == "true" {
+	if envVars.DebugLogs {
 		fmt.Printf("[DEBUG] Successfully tested connection to VictoriaMetrics at %s\n", c.URL)
 	}
 

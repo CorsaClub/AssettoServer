@@ -6,6 +6,8 @@ import (
 	"os"
 	"runtime"
 	"time"
+
+	"metrics/env"
 )
 
 // LogLevel represents the severity of a log message
@@ -38,15 +40,16 @@ var (
 func init() {
 	// Disable default logger timestamp as we add our own
 	log.SetFlags(0)
+	envVars := env.GetEnv()
 
 	// Check if debug logs are enabled via environment variable
-	if os.Getenv("DEBUG_LOGS") == "true" {
+	if envVars.DebugLogs {
 		EnableDebugLogs = true
 		CurrentLogLevel = LogLevelDebug
 	}
 
 	// Check if console output is enabled via environment variable
-	if os.Getenv("ENABLE_CONSOLE_LOGS") == "true" {
+	if envVars.EnableConsoleLogs {
 		DisableConsoleOutput = false
 	}
 
@@ -54,7 +57,7 @@ func init() {
 	ShowServerLogsInConsole = true
 
 	// Désactiver les logs du serveur si la variable d'environnement est définie
-	if os.Getenv("DISABLE_SERVER_LOGS") == "true" {
+	if envVars.DisableServerLogs {
 		ShowServerLogsInConsole = false
 	}
 }

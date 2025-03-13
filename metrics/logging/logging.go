@@ -2,11 +2,11 @@ package logging
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"metrics/config"
+	"metrics/env"
 	"metrics/types"
 	"metrics/victoria"
 )
@@ -23,26 +23,42 @@ func (m *LogManager) Client() victoria.LogsClient {
 
 // NewLogManager creates a new log manager
 func NewLogManager(cfg *config.VictoriaLogsConfig) (*LogManager, error) {
+	// Get environment variables
+	envVars := env.GetEnv()
+
 	// Configure VictoriaLogs URL and credentials
-	if url := os.Getenv("VICTORIA_LOGS_URL"); url != "" {
-		if port := os.Getenv("VICTORIA_LOGS_PORT"); port != "" {
+	if envVars.VictoriaLogsURL != "" {
+		cfg.URL = envVars.GetVictoriaLogsURL()
+		fmt.Printf("[DEBUG] VictoriaLogs URL set from environment: %s\n", cfg.URL)
+	} else if url := envVars.VictoriaLogsURL; url != "" {
+		// Legacy support
+		if port := envVars.VictoriaLogsPort; port != "" {
 			cfg.URL = fmt.Sprintf("http://%s:%s", url, port)
 		} else {
 			cfg.URL = fmt.Sprintf("http://%s:%s", url, config.DefaultVictoriaLogsPort)
 		}
-		fmt.Printf("[DEBUG] VictoriaLogs URL set from environment: %s\n", cfg.URL)
+		fmt.Printf("[DEBUG] VictoriaLogs URL set from legacy environment variables: %s\n", cfg.URL)
 	} else {
 		fmt.Printf("[DEBUG] Using default VictoriaLogs URL: %s\n", cfg.URL)
 	}
 
 	// Configure credentials
-	if user := os.Getenv("VICTORIA_LOGS_USERNAME"); user != "" {
-		cfg.Username = user
+	if envVars.VictoriaLogsUsername != "" {
+		cfg.Username = envVars.VictoriaLogsUsername
 		fmt.Println("[DEBUG] VictoriaLogs username set from environment")
+	} else if user := envVars.VictoriaLogsUsername; user != "" {
+		// Legacy support
+		cfg.Username = user
+		fmt.Println("[DEBUG] VictoriaLogs username set from legacy environment variables")
 	}
-	if pass := os.Getenv("VICTORIA_LOGS_PASSWORD"); pass != "" {
-		cfg.Password = pass
+
+	if envVars.VictoriaLogsPassword != "" {
+		cfg.Password = envVars.VictoriaLogsPassword
 		fmt.Println("[DEBUG] VictoriaLogs password set from environment")
+	} else if pass := envVars.VictoriaLogsPassword; pass != "" {
+		// Legacy support
+		cfg.Password = pass
+		fmt.Println("[DEBUG] VictoriaLogs password set from legacy environment variables")
 	}
 
 	// Create the client

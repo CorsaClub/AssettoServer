@@ -2,9 +2,9 @@ package health
 
 import (
 	"net/http"
-	"os"
 	"time"
 
+	"metrics/env"
 	"metrics/types"
 	"metrics/utils"
 	"metrics/websocket"
@@ -13,6 +13,7 @@ import (
 // InitServer initializes and starts the health check server
 func InitServer(state *types.ServerState, wsServer *websocket.WebSocketServer) {
 	logsClient, _ := utils.GetLogsClient()
+	envVars := env.GetEnv()
 
 	// Create a separate mux for health checks
 	healthMux := http.NewServeMux()
@@ -20,7 +21,7 @@ func InitServer(state *types.ServerState, wsServer *websocket.WebSocketServer) {
 	// Add HTTP health endpoint
 	healthMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		// In test mode, always return healthy
-		if os.Getenv("TEST_MODE") == "true" {
+		if envVars.TestMode {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("OK (Test Mode)"))
 			return

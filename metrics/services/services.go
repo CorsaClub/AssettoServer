@@ -2,11 +2,11 @@ package metrics
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"metrics/config"
+	"metrics/env"
 	"metrics/geoip"
 	"metrics/types"
 	"metrics/victoria"
@@ -14,14 +14,16 @@ import (
 
 // InitGeoIPService initializes the GeoIP service if enabled
 func InitGeoIPService(geoipConfig config.GeoIPConfig, logsClient victoria.LogsClient) *geoip.GeoIPService {
+	envVars := env.GetEnv()
+
 	// Check environment variable to override default config
-	if geoipEnabled := os.Getenv("GEOIP_ENABLED"); geoipEnabled == "true" {
+	if envVars.GeoIPEnabled {
 		geoipConfig.Enabled = true
 		logsClient.LogEvent("INFO", "GeoIP service enabled via environment variable", "geoip", nil)
 	}
 
 	// Check for database path override
-	if dbPath := os.Getenv("GEOIP_DATABASE_PATH"); dbPath != "" {
+	if dbPath := envVars.GeoIPDatabasePath; dbPath != "" {
 		geoipConfig.DatabasePath = dbPath
 		logsClient.LogEvent("INFO", fmt.Sprintf("Using GeoIP database path from environment: %s", dbPath), "geoip", nil)
 	}

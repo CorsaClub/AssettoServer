@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"metrics/config"
+	"metrics/env"
 	"metrics/types"
 )
 
@@ -64,14 +64,16 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 		return nil
 	}
 
+	envVars := env.GetEnv()
+
 	// Get server ID from environment or generate one
-	serverID := os.Getenv("GAMESERVER_ID")
+	serverID := envVars.GameServerID
 	if serverID == "" {
 		serverID = "unknown"
 	}
 
 	// Log debug information
-	if os.Getenv("DEBUG_LOGS") == "true" {
+	if envVars.DebugLogs {
 		fmt.Printf("[DEBUG] Sending %d logs to VictoriaLogs at %s\n", len(logs), c.URL)
 	}
 
@@ -133,7 +135,7 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 
 	// Create request with the correct endpoint for VictoriaLogs JSON Stream API
 	url := fmt.Sprintf("%s/insert/jsonline?_msg_field=log.message&_time_field=date&_stream_fields=stream", c.URL)
-	if os.Getenv("DEBUG_LOGS") == "true" {
+	if envVars.DebugLogs {
 		fmt.Printf("[DEBUG] Using endpoint for logs: %s\n", url)
 
 		// Log a sample of the data being sent
@@ -162,7 +164,7 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 	// Send request
 	resp, err := c.client.Do(req)
 	if err != nil {
-		if os.Getenv("DEBUG_LOGS") == "true" {
+		if envVars.DebugLogs {
 			fmt.Printf("[DEBUG] Error sending logs to VictoriaLogs: %v\n", err)
 		}
 		return fmt.Errorf("error sending logs: %w", err)
@@ -172,13 +174,13 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 	// Check response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		if os.Getenv("DEBUG_LOGS") == "true" {
+		if envVars.DebugLogs {
 			fmt.Printf("[DEBUG] VictoriaLogs returned status %d: %s\n", resp.StatusCode, string(bodyBytes))
 		}
 		return fmt.Errorf("error from VictoriaLogs: %s - %s", resp.Status, string(bodyBytes))
 	}
 
-	if os.Getenv("DEBUG_LOGS") == "true" {
+	if envVars.DebugLogs {
 		fmt.Printf("[DEBUG] Successfully sent %d logs to VictoriaLogs\n", len(logs))
 	}
 

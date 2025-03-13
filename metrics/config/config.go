@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"time"
 )
 
@@ -127,14 +126,6 @@ func NewDefaultConfig() *Config {
 			Enabled:      DefaultGeoIPEnabled,
 			DatabasePath: DefaultGeoIPDatabasePath,
 		},
-	}
-}
-
-// NewAuthConfig is for websocket authentication
-func NewAuthConfig() *AuthConfig {
-	return &AuthConfig{
-		SteamID: os.Getenv("AUTH_STEAM_ID"),
-		UserID:  os.Getenv("AUTH_USER_ID"),
 	}
 }
 

@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"metrics/config"
+	"metrics/env"
 	"metrics/logging"
 	"metrics/server"
+	"metrics/types"
 	"metrics/utils"
 	"metrics/victoria"
 )
@@ -22,11 +25,14 @@ func main() {
 	os.Setenv("DEBUG_LOGS", "true")
 	os.Setenv("DEBUG_METRICS", "true")
 
+	// Initialiser les variables d'environnement avec le nouveau package env
+	envVars := env.GetEnv()
+
+	// Afficher les variables d'environnement
+	envVars.LogEnvironmentVariables()
+
 	// Create configuration
 	cfg := config.NewDefaultConfig()
-
-	// Log environment variables
-	logEnvironmentVariables()
 
 	// Test basic HTTP connectivity to VictoriaMetrics and VictoriaLogs
 	testBasicConnectivity(cfg.Victoria.URL, cfg.VictoriaLogs.URL)
@@ -39,7 +45,7 @@ func main() {
 	utils.SetLogsClient(logManager.Client())
 
 	logManager.LogEvent("INFO", "Starting wrapper", "startup", map[string]string{
-		"test_mode": os.Getenv("TEST_MODE"),
+		"test_mode": fmt.Sprintf("%v", envVars.TestMode),
 	})
 
 	// Create a WaitGroup to track goroutines
@@ -83,9 +89,49 @@ func main() {
 
 	fmt.Println("=====================================")
 
+	// Envoyer des métriques de test supplémentaires
+	fmt.Println("=== Envoi de métriques et logs de test supplémentaires ===")
+
+	// Envoyer une métrique de test
+	testMetric := types.MetricBatch{
+		Metrics: []types.Metric{
+			{
+				Name:      "assetto_server_test_metric",
+				Value:     42.0,
+				Type:      types.Gauge,
+				Timestamp: time.Now(),
+				LabelValues: map[string]string{
+					"test":   "true",
+					"source": "main",
+				},
+			},
+		},
+		Time: time.Now(),
+	}
+
+	if err := metricsClient.SendMetricsImmediate(testMetric); err != nil {
+		fmt.Printf("ERREUR: Impossible d'envoyer la métrique de test: %v\n", err)
+	} else {
+		fmt.Println("SUCCÈS: Métrique de test envoyée avec succès")
+	}
+
+	// Envoyer un log de test
+	logManager.LogEvent("INFO", "Ceci est un log de test depuis main.go", "test", map[string]string{
+		"test":      "true",
+		"source":    "main",
+		"timestamp": time.Now().Format(time.RFC3339),
+	})
+	fmt.Println("SUCCÈS: Log de test envoyé")
+
+	fmt.Println("=====================================")
+
 	// Create a context with cancellation for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Démarrer le buffer de métriques en arrière-plan
+	go metricsClient.StartMetricBuffer(ctx)
+	fmt.Println("Buffer de métriques démarré en arrière-plan")
 
 	// Create and start the server
 	srv := server.New(cfg, metricsClient, logManager.Client())
@@ -103,19 +149,6 @@ func main() {
 	// Wait for all goroutines to finish
 	wg.Wait()
 	logManager.LogEvent("INFO", "All goroutines finished, exiting", "shutdown", nil)
-}
-
-// logEnvironmentVariables logs important environment variables for debugging
-func logEnvironmentVariables() {
-	fmt.Println("=== Environment Variables ===")
-	fmt.Printf("VICTORIA_LOGS_URL: %s\n", os.Getenv("VICTORIA_LOGS_URL"))
-	fmt.Printf("VICTORIA_LOGS_PORT: %s\n", os.Getenv("VICTORIA_LOGS_PORT"))
-	fmt.Printf("VICTORIA_URL: %s\n", os.Getenv("VICTORIA_URL"))
-	fmt.Printf("VICTORIA_PORT: %s\n", os.Getenv("VICTORIA_PORT"))
-	fmt.Printf("GAMESERVER_ID: %s\n", os.Getenv("GAMESERVER_ID"))
-	fmt.Printf("DEBUG_LOGS: %s\n", os.Getenv("DEBUG_LOGS"))
-	fmt.Printf("DEBUG_METRICS: %s\n", os.Getenv("DEBUG_METRICS"))
-	fmt.Println("============================")
 }
 
 // testBasicConnectivity performs a simple HTTP GET request to check if the services are accessible

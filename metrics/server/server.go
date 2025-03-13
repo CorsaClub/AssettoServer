@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"metrics/config"
+	"metrics/env"
 	"metrics/events"
 	"metrics/health"
 	"metrics/metrics"
@@ -32,7 +33,9 @@ type Server struct {
 
 // New creates a new server instance
 func New(cfg *config.Config, metricsClient *victoria.MetricsClient, logsClient victoria.LogsClient) *Server {
-	serverID := os.Getenv("GAMESERVER_ID")
+	envVars := env.GetEnv()
+
+	serverID := envVars.GameServerID
 	if serverID == "" {
 		serverID = utils.GenerateServerID()
 		logsClient.LogEvent("INFO", fmt.Sprintf("Generated server ID: %s", serverID), "server_id", nil)
@@ -40,9 +43,9 @@ func New(cfg *config.Config, metricsClient *victoria.MetricsClient, logsClient v
 
 	state := &types.ServerState{
 		ServerID:         serverID,
-		ServerRegion:     os.Getenv("GAMESERVER_REGION"),
-		ServerName:       os.Getenv("SERVER_NAME"),
-		ServerType:       os.Getenv("SERVER_TYPE"),
+		ServerRegion:     envVars.GameServerRegion,
+		ServerName:       envVars.ServerName,
+		ServerType:       envVars.ServerType,
 		LastPing:         time.Now(),
 		StartTime:        time.Now(),
 		ConnectedPlayers: make(map[string]*types.Player),
@@ -52,7 +55,7 @@ func New(cfg *config.Config, metricsClient *victoria.MetricsClient, logsClient v
 		},
 	}
 
-	wsServer := websocket.NewWebSocketServer(config.NewAuthConfig())
+	wsServer := websocket.NewWebSocketServer(envVars.GetAuthConfig())
 
 	// Test connections
 	if err := metrics.TestVictoriaMetricsConnection(metricsClient, state.ServerID, logsClient); err != nil {
@@ -117,6 +120,7 @@ func (s *Server) startKeepAlive(ctx context.Context) {
 
 // SetupSignalHandler sets up signal handling for graceful shutdown
 func (s *Server) SetupSignalHandler(cancel context.CancelFunc) {
+	envVars := env.GetEnv()
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
@@ -128,7 +132,7 @@ func (s *Server) SetupSignalHandler(cancel context.CancelFunc) {
 		s.State.ShuttingDown = true
 		s.State.Unlock()
 
-		if os.Getenv("TEST_MODE") != "true" {
+		if !envVars.TestMode {
 			cancel()
 		}
 	}()
