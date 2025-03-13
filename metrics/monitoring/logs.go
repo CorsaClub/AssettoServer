@@ -195,7 +195,7 @@ func (lm *LogMonitor) monitorLog(ctx context.Context, pattern string) {
 				continue
 			}
 
-			// Afficher les logs du serveur dans la console
+			// Toujours afficher les logs du serveur dans la console
 			utils.LogServerOutput(line)
 
 			// Appeler le callback si défini
@@ -205,19 +205,24 @@ func (lm *LogMonitor) monitorLog(ctx context.Context, pattern string) {
 
 			// Analyser le log
 			logLevel, eventType := lm.analyzeLine(line)
-			if logLevel != "" {
-				timestamp := time.Now()
-				logs = append(logs, models.LogEntry{
-					Timestamp: timestamp,
-					Level:     logLevel,
-					Message:   line,
-					Labels: map[string]string{
-						"log_file":   pattern,
-						"source":     "assetto_server",
-						"event_type": eventType,
-					},
-				})
+
+			// Ajouter le log à la batch même si le niveau n'est pas reconnu
+			timestamp := time.Now()
+			if logLevel == "" {
+				logLevel = "info" // Par défaut, considérer comme info
+				eventType = "server_output"
 			}
+
+			logs = append(logs, models.LogEntry{
+				Timestamp: timestamp,
+				Level:     logLevel,
+				Message:   line,
+				Labels: map[string]string{
+					"log_file":   pattern,
+					"source":     "assetto_server",
+					"event_type": eventType,
+				},
+			})
 
 			if len(logs) >= lm.batchSize {
 				lm.processBatch(logs)

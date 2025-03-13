@@ -76,6 +76,7 @@ func LogServerOutput(output string) {
 	// Les logs du serveur sont toujours affichés sauf si explicitement désactivés
 	if ShowServerLogsInConsole {
 		timestamp := time.Now().Format("15:04:05")
+
 		// Déterminer le niveau de log pour le formatage
 		var format string
 		switch {
@@ -85,13 +86,20 @@ func LogServerOutput(output string) {
 			format = LogFormatWRN
 		case strings.Contains(strings.ToUpper(output), "DEBUG"):
 			format = LogFormatDBG
+		case strings.Contains(strings.ToUpper(output), "INFO"):
+			format = LogFormatINF
 		default:
 			format = LogFormatSRV
 		}
 
-		// Toujours utiliser log.Print pour les logs du serveur
+		// Toujours afficher le log, même si c'est une sortie non gérée
 		log.Printf(format, timestamp, output)
 	}
+
+	// Envoyer également à VictoriaLogs
+	sendToLogsClient("info", output, "server_output", map[string]string{
+		"source": "assetto_server",
+	})
 }
 
 // LogSDK logs a message at the SDK level
@@ -223,10 +231,8 @@ func sendToLogsClient(level, message, eventType string, extraLabels map[string]s
 	}
 
 	labels := make(map[string]string)
-	if extraLabels != nil {
-		for k, v := range extraLabels {
-			labels[k] = v
-		}
+	for k, v := range extraLabels {
+		labels[k] = v
 	}
 
 	// Add source information
