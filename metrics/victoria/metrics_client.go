@@ -429,57 +429,92 @@ func (c *MetricsClient) SendLogs(logs []models.LogEntry) error {
 	return fmt.Errorf("method not implemented for MetricsClient, use LogsClient instead")
 }
 
+// sendToVictoriaMetrics sends data to VictoriaMetrics
 func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
-	ctx, cancel := context.WithTimeout(context.Background(), c.config.Victoria.RequestTimeout)
-	defer cancel()
-
-	data, err := c.formatMetricsPrometheus(batch)
-	if err != nil {
-		return fmt.Errorf("error formatting metrics: %w", err)
+	// Get server ID from environment or generate one
+	serverID := os.Getenv("GAMESERVER_ID")
+	if serverID == "" {
+		serverID = "unknown"
 	}
 
-	var body io.Reader = bytes.NewBuffer(data)
+	// Create a buffer to store JSON lines
+	var buf bytes.Buffer
+
+	// Convert each metric to JSON line format
+	for _, metric := range batch.Metrics {
+		// Create the log entry
+		entry := map[string]interface{}{
+			"log": map[string]interface{}{
+				"level":   "info",
+				"message": fmt.Sprintf("%s=%g", metric.Name, metric.Value),
+			},
+			"date":      fmt.Sprintf("%d", metric.Timestamp.UnixNano()),
+			"stream":    metric.Name,
+			"game":      "ac",
+			"server_id": serverID,
+		}
+
+		// Add labels to the entry
+		for k, v := range metric.LabelValues {
+			entry[k] = v
+		}
+
+		// Marshal to JSON
+		jsonData, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("error marshaling metric: %w", err)
+		}
+
+		// Write JSON line
+		buf.Write(jsonData)
+		buf.WriteString("\n")
+	}
+
+	// Prepare request body
+	var body io.Reader = &buf
+	contentType := "application/stream+json"
+
 	if c.config.Victoria.Compression {
-		var buf bytes.Buffer
-		gz := gzip.NewWriter(&buf)
-		if _, err := gz.Write(data); err != nil {
+		var compressedBuf bytes.Buffer
+		gz := gzip.NewWriter(&compressedBuf)
+		if _, err := gz.Write(buf.Bytes()); err != nil {
 			return fmt.Errorf("compression error: %w", err)
 		}
 		if err := gz.Close(); err != nil {
 			return fmt.Errorf("compression close error: %w", err)
 		}
-		body = &buf
+		body = &compressedBuf
+		contentType = "application/stream+json+gzip"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/api/v1/import/prometheus", body)
+	// Create request with the correct endpoint
+	url := fmt.Sprintf("%s/insert/jsonline?_stream_fields=stream&_time_field=date&_msg_field=log.message", c.URL)
+	req, err := http.NewRequest("POST", url, body)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
 
+	// Set headers
+	req.Header.Set("Content-Type", contentType)
+
+	// Set authentication if provided
 	if c.Username != "" && c.Password != "" {
 		req.SetBasicAuth(c.Username, c.Password)
 	}
 
-	if c.config.Victoria.Compression {
-		req.Header.Set("Content-Encoding", "gzip")
-	}
-	req.Header.Set("Content-Type", "text/plain")
-
+	// Send request
 	resp, err := c.client.Do(req)
 	if err != nil {
-		utils.LogError("Sending metrics failed: %v", err)
 		return fmt.Errorf("error sending metrics: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// Check response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
-		utils.LogError("Sending metrics failed (code %d): %s",
-			resp.StatusCode, string(respBody))
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return fmt.Errorf("unexpected status code: %d - %s", resp.StatusCode, string(respBody))
 	}
 
-	// No log on success
 	return nil
 }
 
