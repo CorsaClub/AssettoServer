@@ -30,14 +30,19 @@ func NewLogManager(cfg *config.VictoriaLogsConfig) (*LogManager, error) {
 		} else {
 			cfg.URL = fmt.Sprintf("http://%s:%s", url, config.DefaultVictoriaLogsPort)
 		}
+		fmt.Printf("[DEBUG] VictoriaLogs URL set from environment: %s\n", cfg.URL)
+	} else {
+		fmt.Printf("[DEBUG] Using default VictoriaLogs URL: %s\n", cfg.URL)
 	}
 
 	// Configure credentials
 	if user := os.Getenv("VICTORIA_LOGS_USERNAME"); user != "" {
 		cfg.Username = user
+		fmt.Println("[DEBUG] VictoriaLogs username set from environment")
 	}
 	if pass := os.Getenv("VICTORIA_LOGS_PASSWORD"); pass != "" {
 		cfg.Password = pass
+		fmt.Println("[DEBUG] VictoriaLogs password set from environment")
 	}
 
 	// Create the client
@@ -50,9 +55,11 @@ func NewLogManager(cfg *config.VictoriaLogsConfig) (*LogManager, error) {
 
 	// Test connection
 	if err := mgr.TestConnection(); err != nil {
+		fmt.Printf("[ERROR] Failed to connect to VictoriaLogs: %v\n", err)
 		return nil, fmt.Errorf("failed to connect to VictoriaLogs: %v", err)
 	}
 
+	fmt.Println("[INFO] Successfully connected to VictoriaLogs")
 	return mgr, nil
 }
 

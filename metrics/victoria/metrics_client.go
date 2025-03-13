@@ -4,12 +4,10 @@ package victoria
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -28,24 +26,14 @@ import (
 
 // MetricsClient is a client for sending metrics to VictoriaMetrics
 type MetricsClient struct {
-	URL            string
-	Username       string
-	Password       string
-	client         *http.Client
-	config         *config.Config
-	buffer         chan types.MetricBatch
-	batchSize      int
-	errorRegistry  *ErrorRegistry
-	circuitBreaker *utils.CircuitBreaker
-	rateLimiter    *utils.RateLimiter
-}
-
-// MetricPoint represents a data point for VictoriaMetrics
-type MetricPoint struct {
-	Metric    string            `json:"metric"`
-	Value     float64           `json:"value"`
-	Timestamp int64             `json:"timestamp"`
-	Labels    map[string]string `json:"labels,omitempty"`
+	URL           string
+	Username      string
+	Password      string
+	client        *http.Client
+	config        *config.Config
+	buffer        chan types.MetricBatch
+	batchSize     int
+	errorRegistry *ErrorRegistry
 }
 
 // MetricError represents a structured error for metrics operations
@@ -314,6 +302,28 @@ func validateLabels(labels map[string]string, cfg *config.MetricsConfig) error {
 
 // NewClient creates a new VictoriaMetrics client
 func NewClient(cfg *config.Config) *MetricsClient {
+	// Configure VictoriaMetrics URL from environment variables if available
+	if url := os.Getenv("VICTORIA_URL"); url != "" {
+		if port := os.Getenv("VICTORIA_PORT"); port != "" {
+			cfg.Victoria.URL = fmt.Sprintf("http://%s:%s", url, port)
+		} else {
+			cfg.Victoria.URL = fmt.Sprintf("http://%s:%s", url, config.DefaultVictoriaPort)
+		}
+		fmt.Printf("[DEBUG] VictoriaMetrics URL set from environment: %s\n", cfg.Victoria.URL)
+	} else {
+		fmt.Printf("[DEBUG] Using default VictoriaMetrics URL: %s\n", cfg.Victoria.URL)
+	}
+
+	// Configure credentials from environment variables if available
+	if user := os.Getenv("VICTORIA_USERNAME"); user != "" {
+		cfg.Victoria.Username = user
+		fmt.Println("[DEBUG] VictoriaMetrics username set from environment")
+	}
+	if pass := os.Getenv("VICTORIA_PASSWORD"); pass != "" {
+		cfg.Victoria.Password = pass
+		fmt.Println("[DEBUG] VictoriaMetrics password set from environment")
+	}
+
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   cfg.Victoria.ConnectTimeout,
@@ -432,71 +442,66 @@ func (c *MetricsClient) SendLogs(logs []models.LogEntry) error {
 
 // sendToVictoriaMetrics sends data to VictoriaMetrics
 func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
+	ctx, cancel := context.WithTimeout(context.Background(), c.config.Victoria.RequestTimeout)
+	defer cancel()
+
 	// Get server ID from environment or generate one
 	serverID := os.Getenv("GAMESERVER_ID")
 	if serverID == "" {
 		serverID = "unknown"
 	}
 
-	// Create a buffer to store JSON lines
-	var buf bytes.Buffer
+	// Log debug information
+	if os.Getenv("DEBUG_LOGS") == "true" {
+		fmt.Printf("[DEBUG] Sending %d metrics to VictoriaMetrics at %s using Prometheus exposition format\n", len(batch.Metrics), c.URL)
+	}
 
-	// Convert each metric to JSON line format
-	for _, metric := range batch.Metrics {
-		// Create the log entry
-		entry := map[string]interface{}{
-			"log": map[string]interface{}{
-				"level":   "info",
-				"message": fmt.Sprintf("%s=%g", metric.Name, metric.Value),
-			},
-			"date":      fmt.Sprintf("%d", metric.Timestamp.UnixNano()),
-			"stream":    metric.Name,
-			"game":      "ac",
-			"server_id": serverID,
-		}
-
-		// Add labels to the entry
-		for k, v := range metric.LabelValues {
-			entry[k] = v
-		}
-
-		// Marshal to JSON
-		jsonData, err := json.Marshal(entry)
-		if err != nil {
-			return fmt.Errorf("error marshaling metric: %w", err)
-		}
-
-		// Write JSON line
-		buf.Write(jsonData)
-		buf.WriteString("\n")
+	// Format metrics in Prometheus exposition format
+	promData, err := c.formatMetricsPrometheus(batch)
+	if err != nil {
+		return fmt.Errorf("error formatting metrics: %w", err)
 	}
 
 	// Prepare request body
-	var body io.Reader = &buf
-	contentType := "application/stream+json"
+	var body io.Reader = bytes.NewReader(promData)
+	contentType := "text/plain"
 
 	if c.config.Victoria.Compression {
 		var compressedBuf bytes.Buffer
 		gz := gzip.NewWriter(&compressedBuf)
-		if _, err := gz.Write(buf.Bytes()); err != nil {
+		if _, err := gz.Write(promData); err != nil {
 			return fmt.Errorf("compression error: %w", err)
 		}
 		if err := gz.Close(); err != nil {
 			return fmt.Errorf("compression close error: %w", err)
 		}
 		body = &compressedBuf
-		contentType = "application/stream+json+gzip"
+		contentType = "text/plain; charset=utf-8"
 	}
 
-	// Create request with the correct endpoint
-	url := fmt.Sprintf("%s/insert/jsonline?_stream_fields=stream&_time_field=date&_msg_field=log.message", c.URL)
-	req, err := http.NewRequest("POST", url, body)
+	// Create request with the correct endpoint for Prometheus exposition format
+	url := fmt.Sprintf("%s/api/v1/import/prometheus", c.URL)
+	if os.Getenv("DEBUG_LOGS") == "true" {
+		fmt.Printf("[DEBUG] Using endpoint for metrics: %s\n", url)
+
+		// Log a sample of the data being sent
+		sample := string(promData)
+		if len(sample) > 500 {
+			sample = sample[:500] + "..." // Truncate to avoid too long logs
+		}
+		fmt.Printf("[DEBUG] Sample metrics data: %s\n", sample)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, body)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
 
 	// Set headers
 	req.Header.Set("Content-Type", contentType)
+	if c.config.Victoria.Compression {
+		req.Header.Set("Content-Encoding", "gzip")
+	}
 
 	// Set authentication if provided
 	if c.Username != "" && c.Password != "" {
@@ -506,6 +511,9 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 	// Send request
 	resp, err := c.client.Do(req)
 	if err != nil {
+		if os.Getenv("DEBUG_LOGS") == "true" {
+			fmt.Printf("[DEBUG] Error sending metrics to VictoriaMetrics: %v\n", err)
+		}
 		return fmt.Errorf("error sending metrics: %w", err)
 	}
 	defer resp.Body.Close()
@@ -513,16 +521,23 @@ func (c *MetricsClient) sendToVictoriaMetrics(batch types.MetricBatch) error {
 	// Check response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
+		if os.Getenv("DEBUG_LOGS") == "true" {
+			fmt.Printf("[DEBUG] VictoriaMetrics returned status %d: %s\n", resp.StatusCode, string(respBody))
+		}
 		return fmt.Errorf("unexpected status code: %d - %s", resp.StatusCode, string(respBody))
+	}
+
+	if os.Getenv("DEBUG_LOGS") == "true" {
+		fmt.Printf("[DEBUG] Successfully sent %d metrics to VictoriaMetrics\n", len(batch.Metrics))
 	}
 
 	return nil
 }
 
-// LogEvent creates and sends a unique log event
+// LogEvent creates and sends a metric event
 func (c *MetricsClient) LogEvent(level, message string, eventType string, labels map[string]string) error {
-	// Send an event to VictoriaMetrics
-	c.SendMetrics(types.MetricBatch{
+	// Create a metric for the event
+	eventMetric := types.MetricBatch{
 		Metrics: []types.Metric{
 			{
 				Name:  "assetto_server_event",
@@ -536,51 +551,20 @@ func (c *MetricsClient) LogEvent(level, message string, eventType string, labels
 			},
 		},
 		Time: time.Now(),
-	})
+	}
 
-	return nil
+	// Add additional labels if provided
+	if labels != nil {
+		for k, v := range labels {
+			eventMetric.Metrics[0].LabelValues[k] = v
+		}
+	}
+
+	// Send the event metric
+	return c.SendMetrics(eventMetric)
 }
 
-// SendEvent sends an event to VictoriaLogs
-func (c *MetricsClient) SendEvent(eventType, message string, labels map[string]string) error {
-	// Create an event
-	event := map[string]interface{}{
-		"_msg":       message,
-		"_time":      time.Now().Format(time.RFC3339),
-		"event_type": eventType,
-	}
-
-	// Add labels
-	for k, v := range labels {
-		event[k] = v
-	}
-
-	// Marshal to JSON
-	jsonData, err := json.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("failed to marshal event: %v", err)
-	}
-
-	// Send to VictoriaLogs
-	data := url.Values{}
-	data.Set("format", "json")
-	data.Set("stream", "assetto_server_event")
-	data.Set("data", string(jsonData))
-
-	resp, err := c.client.PostForm(c.URL+"/api/v1/logs/insert", data)
-	if err != nil {
-		return fmt.Errorf("failed to send event: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code when sending event: %d", resp.StatusCode)
-	}
-
-	return nil
-}
-
-// Add flush method with retry
+// flushMetrics sends metrics with retry capability
 func (c *MetricsClient) flushMetrics(batch types.MetricBatch) error {
 	for attempt := 0; attempt < c.config.Victoria.MaxRetries; attempt++ {
 		if err := c.sendToVictoriaMetrics(batch); err == nil {
@@ -620,7 +604,7 @@ func (c *MetricsClient) processMetric(metric *types.Metric) error {
 	return nil
 }
 
-// Add error handling methods
+// handleError handles and records metric errors
 func (c *MetricsClient) handleError(err error, code string, retryable bool) error {
 	if err == nil {
 		return nil
@@ -655,7 +639,7 @@ func (c *MetricsClient) handleError(err error, code string, retryable bool) erro
 	return &metricErr
 }
 
-// Add this method to Client
+// Buffer returns the metrics buffer channel
 func (c *MetricsClient) Buffer() chan types.MetricBatch {
 	return c.buffer
 }
@@ -665,7 +649,7 @@ func (c *MetricsClient) GetErrorCount(errorCode string) int {
 	return c.errorRegistry.GetErrorCount(errorCode)
 }
 
-// Add this function to debug the format of the metrics
+// logMetricFormat logs the format of metrics for debugging
 func (c *MetricsClient) logMetricFormat(batch types.MetricBatch) {
 	// Only log format if debug mode is active
 	if os.Getenv("DEBUG_METRICS") != "true" {
@@ -777,4 +761,46 @@ func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// TestConnection tests the connection to VictoriaMetrics
+func (c *MetricsClient) TestConnection() error {
+	// Create a test metric
+	testMetric := types.Metric{
+		Name:      "test_connection",
+		Value:     1.0,
+		Type:      types.Gauge,
+		Timestamp: time.Now(),
+		LabelValues: map[string]string{
+			"test": "true",
+		},
+	}
+
+	// Create a batch with the test metric
+	batch := types.MetricBatch{
+		Metrics: []types.Metric{testMetric},
+		Time:    time.Now(),
+	}
+
+	// Send the test metric
+	err := c.SendMetricsImmediate(batch)
+	if err != nil {
+		// Try to determine the cause of the error
+		if strings.Contains(err.Error(), "404") {
+			return fmt.Errorf("VictoriaMetrics API endpoint may be incorrect (should be /api/v1/import/prometheus): %w", err)
+		} else if strings.Contains(err.Error(), "connection refused") {
+			return fmt.Errorf("connection to VictoriaMetrics was refused, check if the service is running on %s: %w", c.URL, err)
+		} else if strings.Contains(err.Error(), "no such host") {
+			return fmt.Errorf("VictoriaMetrics host could not be resolved (%s): %w", c.URL, err)
+		} else if strings.Contains(err.Error(), "timeout") {
+			return fmt.Errorf("connection to VictoriaMetrics timed out (%s): %w", c.URL, err)
+		}
+		return fmt.Errorf("failed to send test metric to VictoriaMetrics: %w", err)
+	}
+
+	if os.Getenv("DEBUG_LOGS") == "true" {
+		fmt.Printf("[DEBUG] Successfully tested connection to VictoriaMetrics at %s\n", c.URL)
+	}
+
+	return nil
 }

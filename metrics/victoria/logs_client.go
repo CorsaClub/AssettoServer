@@ -58,7 +58,7 @@ func NewLogsClient(cfg *config.VictoriaLogsConfig) LogsClient {
 	}
 }
 
-// SendLogs sends logs to VictoriaLogs using the Loki API
+// SendLogs sends logs to VictoriaLogs using the JSON Stream API
 func (c LogsClient) SendLogs(logs []types.Log) error {
 	if len(logs) == 0 {
 		return nil
@@ -70,86 +70,54 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 		serverID = "unknown"
 	}
 
-	// Group logs by stream (combination of log_type and source)
-	streams := make(map[string][]types.Log)
+	// Log debug information
+	if os.Getenv("DEBUG_LOGS") == "true" {
+		fmt.Printf("[DEBUG] Sending %d logs to VictoriaLogs at %s\n", len(logs), c.URL)
+	}
+
+	// Create a buffer to store JSON lines
+	var buf bytes.Buffer
+
+	// Convert each log to JSON line format according to VictoriaLogs JSON Stream API
+	// https://docs.victoriametrics.com/victorialogs/data-ingestion/#json-stream-api
 	for _, log := range logs {
-		streamKey := fmt.Sprintf("%s_%s", log.LogType, log.Source)
-		streams[streamKey] = append(streams[streamKey], log)
-	}
-
-	// Create Loki push request format
-	request := struct {
-		Streams []struct {
-			Stream map[string]string `json:"stream"`
-			Values [][]string        `json:"values"`
-		} `json:"streams"`
-	}{
-		Streams: make([]struct {
-			Stream map[string]string `json:"stream"`
-			Values [][]string        `json:"values"`
-		}, 0, len(streams)),
-	}
-
-	// Convert each stream group to Loki format
-	for streamKey, streamLogs := range streams {
-		stream := struct {
-			Stream map[string]string `json:"stream"`
-			Values [][]string        `json:"values"`
-		}{
-			Stream: map[string]string{
-				"log_type":  strings.Split(streamKey, "_")[0],
-				"source":    strings.Split(streamKey, "_")[1],
-				"game":      "ac",
-				"server_id": serverID,
-			},
-			Values: make([][]string, 0, len(streamLogs)),
-		}
-
-		// Add common labels from the first log
-		if len(streamLogs) > 0 {
-			for k, v := range streamLogs[0].Labels {
-				stream.Stream[k] = v
-			}
-		}
-
-		// Add values for each log
-		for _, log := range streamLogs {
-			// Format the log entry
-			logEntry := map[string]interface{}{
+		// Create the log entry
+		entry := map[string]interface{}{
+			"date": log.Timestamp.Format(time.RFC3339Nano),
+			"log": map[string]interface{}{
 				"level":   log.Level,
 				"message": log.Message,
-			}
-			// Add any additional labels as fields
-			for k, v := range log.Labels {
-				if _, exists := stream.Stream[k]; !exists {
-					logEntry[k] = v
-				}
-			}
-
-			// Convert to JSON
-			jsonData, err := json.Marshal(logEntry)
-			if err != nil {
-				continue
-			}
-
-			stream.Values = append(stream.Values, []string{
-				fmt.Sprintf("%d", log.Timestamp.UnixNano()),
-				string(jsonData),
-			})
+			},
+			"source": log.Source,
+			"type":   log.LogType,
+			"server": serverID,
+			"game":   "ac",
+			"stream": fmt.Sprintf("%s-%s", log.Source, serverID),
 		}
 
-		request.Streams = append(request.Streams, stream)
+		// Add any additional labels
+		for k, v := range log.Labels {
+			// Avoid overwriting existing fields
+			if k != "log" && k != "date" && k != "stream" && k != "source" && k != "type" && k != "server" && k != "game" {
+				entry[k] = v
+			}
+		}
+
+		// Marshal to JSON
+		jsonData, err := json.Marshal(entry)
+		if err != nil {
+			continue
+		}
+
+		// Write JSON line
+		buf.Write(jsonData)
+		buf.WriteString("\n")
 	}
 
-	// Convert request to JSON
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(request); err != nil {
-		return fmt.Errorf("error encoding request: %w", err)
-	}
-
-	// Compress if enabled
+	// Prepare request body
 	var body io.Reader = &buf
-	var contentType string = "application/json"
+	contentType := "application/stream+json"
+
 	if c.Compression {
 		var compressedBuf bytes.Buffer
 		gzipWriter := gzip.NewWriter(&compressedBuf)
@@ -160,11 +128,25 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 			return fmt.Errorf("error closing gzip writer: %w", err)
 		}
 		body = &compressedBuf
-		contentType = "application/json+gzip"
+		contentType = "application/stream+json+gzip"
 	}
 
-	// Create request with the correct endpoint for Loki API
-	req, err := http.NewRequest("POST", c.URL+"/insert/loki/api/v1/push", body)
+	// Create request with the correct endpoint for VictoriaLogs JSON Stream API
+	url := fmt.Sprintf("%s/insert/jsonline?_msg_field=log.message&_time_field=date&_stream_fields=stream", c.URL)
+	if os.Getenv("DEBUG_LOGS") == "true" {
+		fmt.Printf("[DEBUG] Using endpoint for logs: %s\n", url)
+
+		// Log a sample of the data being sent
+		if buf.Len() > 0 {
+			sample := buf.String()
+			if len(sample) > 500 {
+				sample = sample[:500] + "..." // Truncate to avoid too long logs
+			}
+			fmt.Printf("[DEBUG] Sample log data: %s\n", sample)
+		}
+	}
+
+	req, err := http.NewRequest("POST", url, body)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
@@ -180,6 +162,9 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 	// Send request
 	resp, err := c.client.Do(req)
 	if err != nil {
+		if os.Getenv("DEBUG_LOGS") == "true" {
+			fmt.Printf("[DEBUG] Error sending logs to VictoriaLogs: %v\n", err)
+		}
 		return fmt.Errorf("error sending logs: %w", err)
 	}
 	defer resp.Body.Close()
@@ -187,7 +172,14 @@ func (c LogsClient) SendLogs(logs []types.Log) error {
 	// Check response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		if os.Getenv("DEBUG_LOGS") == "true" {
+			fmt.Printf("[DEBUG] VictoriaLogs returned status %d: %s\n", resp.StatusCode, string(bodyBytes))
+		}
 		return fmt.Errorf("error from VictoriaLogs: %s - %s", resp.Status, string(bodyBytes))
+	}
+
+	if os.Getenv("DEBUG_LOGS") == "true" {
+		fmt.Printf("[DEBUG] Successfully sent %d logs to VictoriaLogs\n", len(logs))
 	}
 
 	return nil
@@ -316,7 +308,7 @@ func (c LogsClient) TestConnection() error {
 	if err := c.SendLogs(testLogs); err != nil {
 		// Try to determine the cause of the error
 		if strings.Contains(err.Error(), "unsupported path") || strings.Contains(err.Error(), "404") {
-			return fmt.Errorf("VictoriaLogs API endpoint may be incorrect (should be /loki/api/v1/push): %w", err)
+			return fmt.Errorf("VictoriaLogs API endpoint may be incorrect (should be /insert/jsonline): %w", err)
 		} else if strings.Contains(err.Error(), "connection refused") {
 			return fmt.Errorf("connection to VictoriaLogs was refused, check if the service is running on %s: %w", c.URL, err)
 		} else if strings.Contains(err.Error(), "no such host") {
