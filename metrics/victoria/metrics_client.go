@@ -363,7 +363,8 @@ func (c *MetricsClient) SendMetrics(batch types.MetricBatch) error {
 		metricPool.Put(pooledMetric)
 	}
 
-	return c.sendToVictoriaMetrics(batch)
+	// Use flushMetrics instead of direct send for retry capability
+	return c.flushMetrics(batch)
 }
 
 // formatMetricsPrometheus converts metrics to Prometheus text format
@@ -590,9 +591,32 @@ func (c *MetricsClient) flushMetrics(batch types.MetricBatch) error {
 	return fmt.Errorf("failed after %d retries", c.config.Victoria.MaxRetries)
 }
 
-// Add metric processing method
+// processMetric processes a metric before sending
 func (c *MetricsClient) processMetric(metric *types.Metric) error {
-	// Add any metric preprocessing logic here
+	// Get server ID from environment
+	serverID := os.Getenv("GAMESERVER_ID")
+	if serverID == "" {
+		serverID = "unknown"
+	}
+
+	// Add common labels if they don't exist
+	if metric.LabelValues == nil {
+		metric.LabelValues = make(map[string]string)
+	}
+
+	// Add required labels if not present
+	if _, exists := metric.LabelValues["game"]; !exists {
+		metric.LabelValues["game"] = "ac"
+	}
+	if _, exists := metric.LabelValues["server_id"]; !exists {
+		metric.LabelValues["server_id"] = serverID
+	}
+
+	// Ensure timestamp is set
+	if metric.Timestamp.IsZero() {
+		metric.Timestamp = time.Now()
+	}
+
 	return nil
 }
 
@@ -713,27 +737,39 @@ func (c *MetricsClient) StartMetricBuffer(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Flush final remaining metrics without log
+			// Flush final remaining metrics with retry
 			if len(batch.Metrics) > 0 {
-				c.sendToVictoriaMetrics(batch)
+				if err := c.flushMetrics(batch); err != nil {
+					if logsClient, ok := utils.GetLogsClient(); ok {
+						logsClient.LogEvent("ERROR", fmt.Sprintf("Failed to flush final metrics: %v", err), "metrics", nil)
+					}
+				}
 			}
 			return
 		case newBatch := <-c.buffer:
 			// Add metrics to current batch
 			batch.Metrics = append(batch.Metrics, newBatch.Metrics...)
 
-			// If batch reaches maximum size, send immediately
+			// If batch reaches maximum size, send immediately with retry
 			if len(batch.Metrics) >= c.batchSize {
-				c.sendToVictoriaMetrics(batch)
+				if err := c.flushMetrics(batch); err != nil {
+					if logsClient, ok := utils.GetLogsClient(); ok {
+						logsClient.LogEvent("ERROR", fmt.Sprintf("Failed to flush metrics batch: %v", err), "metrics", nil)
+					}
+				}
 				batch = types.MetricBatch{
 					Metrics: make([]types.Metric, 0, c.batchSize),
 					Time:    time.Now(),
 				}
 			}
 		case <-ticker.C:
-			// Send current batch if it contains metrics
+			// Send current batch if it contains metrics with retry
 			if len(batch.Metrics) > 0 {
-				c.sendToVictoriaMetrics(batch)
+				if err := c.flushMetrics(batch); err != nil {
+					if logsClient, ok := utils.GetLogsClient(); ok {
+						logsClient.LogEvent("ERROR", fmt.Sprintf("Failed to flush metrics on ticker: %v", err), "metrics", nil)
+					}
+				}
 				batch = types.MetricBatch{
 					Metrics: make([]types.Metric, 0, c.batchSize),
 					Time:    time.Now(),
