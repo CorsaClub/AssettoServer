@@ -222,9 +222,37 @@ func ExtractChatMessage(output string) string {
 }
 
 // ExtractSessionTime extracts the session time from server output.
-func ExtractSessionTime(output string) int {
-	// Extraire le temps restant en secondes
-	return 0 // TODO: Implémenter l'extraction
+func ExtractSessionTime(output string) float64 {
+	// Case 1: Starting session with duration in minutes
+	if strings.Contains(output, "Starting session with duration:") {
+		parts := strings.Split(output, "duration:")
+		if len(parts) > 1 {
+			minutesStr := strings.TrimSpace(strings.Split(parts[1], "minutes")[0])
+			minutes, err := strconv.ParseFloat(minutesStr, 64)
+			if err == nil {
+				return minutes * 60 // Convert minutes to seconds
+			}
+		}
+	}
+
+	// Case 2: Minutes remaining
+	if strings.Contains(output, "minutes remaining") {
+		parts := strings.Split(output, "]")
+		if len(parts) > 1 {
+			minutesStr := strings.TrimSpace(strings.Split(parts[1], "minutes")[0])
+			minutes, err := strconv.ParseFloat(minutesStr, 64)
+			if err == nil {
+				return minutes * 60 // Convert minutes to seconds
+			}
+		}
+	}
+
+	// Case 3: End of session
+	if strings.Contains(output, "End of session") {
+		return 0 // No time remaining
+	}
+
+	return -1 // Invalid or unrecognized format
 }
 
 // ExtractLobbyDetails extracts the lobby details from server output.

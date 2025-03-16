@@ -23,6 +23,7 @@ public class CcTimeSession : CriticalBackgroundService, IAssettoServerAutostart
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var totalTimeSeconds = _configuration.SessionTimeSeconds;
+        Log.Information("Starting session with duration: {time} minutes", totalTimeSeconds / 60);
 
         const int tenMinuteInterval = 10 * 60;
         const int fiveMinuteInterval = 5 * 60;

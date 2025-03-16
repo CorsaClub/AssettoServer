@@ -215,8 +215,16 @@ func handleUpdateLoop(output string, _ *types.ServerState, labels map[string]str
 }
 
 // handleLobbySuccess handles lobby success-related events
-func handleLobbySuccess(_ string, _ *types.ServerState, labels map[string]string) {
-	metrics.LobbyRegistrationCounter.With(labels).Inc()
+func handleLobbySuccess(_ string, state *types.ServerState, labels map[string]string) {
+	utils.LogInfo("Lobby registration successful")
+
+	// Update server health metric to indicate server is healthy
+	metrics.ServerHealth.With(labels).Set(1)
+
+	// Update server state if needed
+	state.Lock()
+	state.Ready = true
+	state.Unlock()
 }
 
 // extractSessionID extracts the session ID from the output string.
