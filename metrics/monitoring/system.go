@@ -597,3 +597,146 @@ func cloneLabels(labels map[string]string) map[string]string {
 	}
 	return newLabels
 }
+
+// InitializeSystemMetrics initializes all system metrics with zero values
+// to ensure they appear in the metrics system even before actual data is collected
+func InitializeSystemMetrics(state *types.ServerState, vmClient *victoria.MetricsClient) {
+	// Create base labels
+	baseLabels := map[string]string{
+		"server_id":   state.ServerID,
+		"server_name": state.ServerName,
+		"server_type": state.ServerType,
+	}
+
+	// Create a batch of initial metrics
+	batch := types.MetricBatch{
+		Metrics: []types.Metric{
+			// CPU metrics
+			{
+				Name:        metrics.ServerCPUUsage.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.SystemCPUUsage.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: addLabel(baseLabels, "cpu", "cpu0"),
+			},
+			// Memory metrics
+			{
+				Name:        metrics.ServerMemoryUsage.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.SystemMemoryTotal.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.SystemMemoryUsed.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.SystemMemoryFree.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.SystemMemorySwap.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			// Disk metrics
+			{
+				Name:        metrics.SystemDiskUsage.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: addLabel(baseLabels, "path", "/"),
+			},
+			{
+				Name:        metrics.SystemDiskFree.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: addLabel(baseLabels, "path", "/"),
+			},
+			// Go runtime metrics
+			{
+				Name:        metrics.SystemGoMemoryAlloc.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.SystemGoMemorySys.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.SystemGoRoutines.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			// Network metrics
+			{
+				Name:        metrics.NetworkLatency.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.NetworkPacketLoss.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+		},
+		Time: time.Now(),
+	}
+
+	// Send the initial metrics
+	if err := vmClient.SendMetrics(batch); err != nil {
+		utils.LogError("Failed to send initial system metrics: %v", err)
+	} else {
+		utils.LogInfo("Initial system metrics sent successfully")
+	}
+}
+
+// addLabel creates a copy of the base labels and adds one additional label
+func addLabel(baseLabels map[string]string, key, value string) map[string]string {
+	result := make(map[string]string, len(baseLabels)+1)
+
+	// Copy base labels
+	for k, v := range baseLabels {
+		result[k] = v
+	}
+
+	// Add additional label
+	result[key] = value
+
+	return result
+}

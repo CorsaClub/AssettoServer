@@ -14,6 +14,7 @@ import (
 	"metrics/events"
 	"metrics/health"
 	"metrics/metrics"
+	"metrics/monitoring"
 	"metrics/process"
 	"metrics/types"
 	"metrics/utils"
@@ -65,13 +66,139 @@ func New(cfg *config.Config, metricsClient *victoria.MetricsClient, logsClient v
 		logsClient.LogEvent("WARNING", "VictoriaLogs connection test failed", "startup", nil)
 	}
 
-	return &Server{
+	// Create server instance
+	server := &Server{
 		State:         state,
 		Config:        cfg,
 		MetricsClient: metricsClient,
 		LogsClient:    logsClient,
 		WSServer:      wsServer,
 		EventChan:     make(chan string, 100),
+	}
+
+	// Send initial server state metric
+	server.sendInitialMetrics()
+
+	return server
+}
+
+// sendInitialMetrics sends the initial metrics when the server starts
+func (s *Server) sendInitialMetrics() {
+	// Create base labels
+	baseLabels := map[string]string{
+		"server_id":     s.State.ServerID,
+		"server_name":   s.State.ServerName,
+		"server_type":   s.State.ServerType,
+		"server_region": s.State.ServerRegion,
+	}
+
+	// Create session labels
+	sessionLabels := map[string]string{
+		"server_id":    s.State.ServerID,
+		"server_name":  s.State.ServerName,
+		"session_id":   s.State.CurrentSession.ID,
+		"session_type": s.State.CurrentSession.Type,
+	}
+
+	// Create a batch of initial metrics
+	batch := types.MetricBatch{
+		Metrics: []types.Metric{
+			// Server state metric - starting
+			{
+				Name:        types.ServerStateMetric,
+				Value:       float64(metrics.ServerStateStarting),
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			// Server starts counter
+			{
+				Name:        types.ServerStartsTotal,
+				Value:       1,
+				Type:        types.Counter,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			// Initial player count (0)
+			{
+				Name:        types.ServerPlayers,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			// Initial uptime
+			{
+				Name:        types.ServerUptime,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			// Initial health status
+			{
+				Name:        types.ServerHealth,
+				Value:       0, // Not healthy yet
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			// Session metrics
+			{
+				Name:        metrics.SessionDurationGauge.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: sessionLabels,
+			},
+			{
+				Name:        metrics.SessionTimeLeftGauge.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:      metrics.SessionRemainingTimeGauge.Name,
+				Value:     0,
+				Type:      types.Gauge,
+				Timestamp: time.Now(),
+				LabelValues: map[string]string{
+					"server_id":    s.State.ServerID,
+					"session_type": s.State.CurrentSession.Type,
+				},
+			},
+			// Track metrics with default values
+			{
+				Name:        metrics.TrackGrip.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.TrackTemperature.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+			{
+				Name:        metrics.AirTemperature.Name,
+				Value:       0,
+				Type:        types.Gauge,
+				Timestamp:   time.Now(),
+				LabelValues: baseLabels,
+			},
+		},
+		Time: time.Now(),
+	}
+
+	// Send the initial metrics
+	if err := s.MetricsClient.SendMetrics(batch); err != nil {
+		s.LogsClient.LogEvent("ERROR", "Failed to send initial server metrics: "+err.Error(), "startup", nil)
+	} else {
+		s.LogsClient.LogEvent("INFO", "Initial server metrics sent successfully", "startup", nil)
 	}
 }
 
@@ -86,8 +213,41 @@ func (s *Server) Start(ctx context.Context, wg *sync.WaitGroup, input, args stri
 	// Initialize GeoIP service
 	geoipService := metrics.InitGeoIPService(s.Config.GeoIP, s.LogsClient)
 
+	// Initialize system metrics
+	monitoring.InitializeSystemMetrics(s.State, s.MetricsClient)
+	s.LogsClient.LogEvent("INFO", "System metrics initialized", "startup", nil)
+
 	// Start event processing
 	go events.ProcessServerEvents(ctx, s.EventChan, s.State, s.MetricsClient, s.LogsClient, geoipService)
+
+	// Initialize and start system monitoring
+	systemMonitor, err := monitoring.NewSystemMonitor(s.State, s.MetricsClient)
+	if err != nil {
+		s.LogsClient.LogEvent("ERROR", "Failed to initialize system monitor: "+err.Error(), "startup", nil)
+	} else {
+		s.LogsClient.LogEvent("INFO", "System monitor initialized", "startup", nil)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			systemMonitor.Start(ctx)
+		}()
+	}
+
+	// Initialize and start performance monitoring
+	perfMonitor := monitoring.NewPerformanceMonitor(s.State, s.MetricsClient)
+	s.LogsClient.LogEvent("INFO", "Performance monitor initialized", "startup", nil)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		perfMonitor.Start(ctx)
+	}()
+
+	// Start metrics system monitoring
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		monitoring.MonitorMetricsSystem(ctx, s.MetricsClient)
+	}()
 
 	// Start the server process
 	cmd := process.StartServer(ctx, input, args, s.State, s.MetricsClient, s.WSServer, s.LogsClient)

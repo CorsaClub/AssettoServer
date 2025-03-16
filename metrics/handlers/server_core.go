@@ -58,6 +58,122 @@ func handleServerOutput(output string, vmClient *victoria.MetricsClient, state *
 		"server_type": state.ServerType,
 	}
 
+	// Extract track information if present
+	if strings.Contains(output, "track:") || strings.Contains(output, "Track:") {
+		trackInfo := utils.ExtractTrackInfo(output)
+		if trackInfo.Name != "" {
+			state.Lock()
+			if state.CurrentSession != nil {
+				state.CurrentSession.Track = trackInfo.Name
+				state.CurrentSession.Layout = trackInfo.Layout
+			}
+			state.Unlock()
+
+			// Update track metrics
+			trackLabels := copyLabels(baseLabels)
+			trackLabels["track"] = trackInfo.Name
+			trackLabels["layout"] = trackInfo.Layout
+			metrics.TrackUsageCounter.With(trackLabels).Inc()
+		}
+	}
+
+	// Extract grip and temperature information
+	if strings.Contains(output, "grip:") || strings.Contains(output, "temperature") {
+		gripInfo := utils.ExtractGripInfo(output)
+		if gripInfo.Grip > 0 {
+			state.Lock()
+			state.TrackGrip = gripInfo.Grip
+			state.Unlock()
+
+			metrics.TrackGrip.With(baseLabels).Set(gripInfo.Grip)
+		}
+
+		if gripInfo.TrackTemp > 0 {
+			state.Lock()
+			state.TrackTemp = gripInfo.TrackTemp
+			state.Unlock()
+
+			metrics.TrackTemperature.With(baseLabels).Set(gripInfo.TrackTemp)
+		}
+
+		if gripInfo.AirTemp > 0 {
+			state.Lock()
+			state.AirTemp = gripInfo.AirTemp
+			state.Unlock()
+
+			metrics.AirTemperature.With(baseLabels).Set(gripInfo.AirTemp)
+		}
+	}
+
+	// Extract CSP version information
+	if strings.Contains(output, "CSP") && strings.Contains(output, "version") {
+		cspInfo := utils.ExtractCSPInfo(output)
+		if cspInfo.Version != "" {
+			playerID := utils.ExtractSteamID(output)
+			playerName := utils.ExtractName(output)
+
+			if playerID != "" && playerName != "" {
+				playerLabels := copyLabels(baseLabels)
+				playerLabels["player_id"] = playerID
+				playerLabels["player_name"] = playerName
+
+				// Convert version string to float for metric
+				versionValue := utils.ParseVersionToFloat(cspInfo.Version)
+				metrics.CSPVersionGauge.With(playerLabels).Set(versionValue)
+			}
+		}
+	}
+
+	// Extract collision information
+	if strings.Contains(output, "Collision") || strings.Contains(output, "collision") {
+		collisionInfo := utils.ExtractCollisionInfo(output)
+		if collisionInfo.Car1 != "" || collisionInfo.Car2 != "" {
+			collisionLabels := copyLabels(baseLabels)
+
+			if collisionInfo.Car1 != "" {
+				collisionLabels["car1"] = collisionInfo.Car1
+			}
+
+			if collisionInfo.Car2 != "" {
+				collisionLabels["car2"] = collisionInfo.Car2
+			}
+
+			if collisionInfo.Speed > 0 {
+				collisionLabels["speed"] = fmt.Sprintf("%.1f", collisionInfo.Speed)
+			}
+
+			if collisionInfo.Force > 0 {
+				collisionLabels["force"] = fmt.Sprintf("%.1f", collisionInfo.Force)
+			}
+
+			metrics.CollisionCounter.With(collisionLabels).Inc()
+		}
+	}
+
+	// Extract lap time information
+	if strings.Contains(output, "LAP") || strings.Contains(output, "lap time") {
+		lapInfo := utils.ExtractLapInfo(output)
+		if lapInfo.PlayerID != "" && lapInfo.LapTime > 0 {
+			lapLabels := copyLabels(baseLabels)
+			lapLabels["player_id"] = lapInfo.PlayerID
+			lapLabels["player_name"] = lapInfo.PlayerName
+			lapLabels["car_model"] = lapInfo.CarModel
+
+			if state.CurrentSession != nil {
+				lapLabels["track"] = state.CurrentSession.Track
+			}
+
+			// Convert lap time to seconds for the metric
+			lapTimeSeconds := float64(lapInfo.LapTime) / 1000.0
+			metrics.LapTimeHistogram.With(lapLabels).Observe(lapTimeSeconds)
+
+			// If it's a best lap, update the best lap metric
+			if lapInfo.IsBest {
+				metrics.PlayerBestLapGauge.With(lapLabels).Set(lapTimeSeconds)
+			}
+		}
+	}
+
 	select {
 	case <-ctx.Done():
 		utils.LogWarning("Timeout while processing server output")
@@ -201,21 +317,50 @@ func handleServerStarting(state *types.ServerState, labels map[string]string) {
 	metrics.ServerStartCounter.With(labels).Inc()
 }
 
-// handleServerReady updates the server state to ready and signals readiness.
-func handleServerReady(state *types.ServerState, labels map[string]string, serverReady chan struct{}) {
+// handleServerReady processes the server ready event
+func handleServerReady(state *types.ServerState, baseLabels map[string]string, serverReady chan struct{}) {
+	// Update server state
 	state.Lock()
 	state.Ready = true
+
+	// Initialize session if not already done
+	if state.CurrentSession.ID == "" {
+		state.CurrentSession.ID = utils.GenerateSessionID()
+		state.CurrentSession.Type = "practice" // Default session type
+		state.CurrentSession.StartTime = time.Now()
+	}
+
+	// Update session start time if not set
+	if state.CurrentSession.StartTime.IsZero() {
+		state.CurrentSession.StartTime = time.Now()
+	}
+
 	state.Unlock()
 
-	utils.LogSDK("Server is ready")
-	metrics.ServerStateGauge.With(labels).Set(float64(metrics.ServerStateReady))
-
+	// Signal that the server is ready
 	select {
 	case serverReady <- struct{}{}:
-		utils.LogSDK("Server ready signal sent")
+		// Signal sent
 	default:
-		utils.LogSDK("Server ready channel is full or closed")
+		// Channel already closed or full
 	}
+
+	// Update metrics
+	metrics.ServerStateGauge.With(baseLabels).Set(float64(metrics.ServerStateReady))
+	metrics.ServerHealth.With(baseLabels).Set(1) // Server is healthy
+
+	// Update session metrics
+	sessionLabels := map[string]string{
+		"server_id":    state.ServerID,
+		"server_name":  state.ServerName,
+		"session_id":   state.CurrentSession.ID,
+		"session_type": state.CurrentSession.Type,
+	}
+
+	metrics.SessionDurationGauge.With(sessionLabels).Set(0) // Initial duration
+
+	// Log server ready event
+	utils.LogInfo("Server ready")
 }
 
 // handleError logs server errors and updates the error metrics accordingly.

@@ -7,9 +7,11 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"metrics/env"
 	"metrics/handlers"
+	"metrics/metrics"
 	"metrics/types"
 	"metrics/victoria"
 	"metrics/websocket"
@@ -112,6 +114,54 @@ func StartServer(ctx context.Context, input, args string, state *types.ServerSta
 			"pid": string(cmd.Process.Pid),
 		})
 	}
+
+	// Wait for server ready signal in a goroutine
+	go func() {
+		select {
+		case <-serverReady:
+			// Server is ready, update state
+			state.Lock()
+			state.Ready = true
+			state.Unlock()
+
+			// Update server state metric to "ready"
+			baseLabels := map[string]string{
+				"server_id":     state.ServerID,
+				"server_name":   state.ServerName,
+				"server_type":   state.ServerType,
+				"server_region": state.ServerRegion,
+			}
+
+			// Send server ready metric
+			readyMetric := types.MetricBatch{
+				Metrics: []types.Metric{
+					{
+						Name:        types.ServerStateMetric,
+						Value:       float64(metrics.ServerStateReady),
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: baseLabels,
+					},
+					{
+						Name:        types.ServerHealth,
+						Value:       1, // Now healthy
+						Type:        types.Gauge,
+						Timestamp:   time.Now(),
+						LabelValues: baseLabels,
+					},
+				},
+				Time: time.Now(),
+			}
+
+			if err := metricsClient.SendMetrics(readyMetric); err != nil {
+				logsClient.LogEvent("ERROR", "Failed to send server ready metric: "+err.Error(), "server_ready", nil)
+			} else {
+				logsClient.LogEvent("INFO", "Server ready metric sent successfully", "server_ready", nil)
+			}
+		case <-ctx.Done():
+			// Context cancelled, do nothing
+		}
+	}()
 
 	return cmd
 }

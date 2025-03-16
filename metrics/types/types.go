@@ -56,6 +56,7 @@ type Session struct {
 	StartTime     time.Time
 	EndTime       time.Time
 	Track         string
+	Layout        string // Track layout
 	ID            string
 	RemainingTime string
 }

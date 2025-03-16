@@ -265,3 +265,236 @@ func ExtractIPAddress(output string) string {
 
 	return ""
 }
+
+// TrackInfo contient les informations sur une piste
+type TrackInfo struct {
+	Name   string
+	Layout string
+}
+
+// ExtractTrackInfo extrait les informations de piste à partir d'une chaîne de sortie
+func ExtractTrackInfo(output string) TrackInfo {
+	// Exemple: "Track: monza, Layout: gp"
+	trackInfo := TrackInfo{}
+
+	trackRegex := regexp.MustCompile(`[Tt]rack:?\s*(\w+)`)
+	layoutRegex := regexp.MustCompile(`[Ll]ayout:?\s*(\w+)`)
+
+	trackMatches := trackRegex.FindStringSubmatch(output)
+	if len(trackMatches) > 1 {
+		trackInfo.Name = strings.TrimSpace(trackMatches[1])
+	}
+
+	layoutMatches := layoutRegex.FindStringSubmatch(output)
+	if len(layoutMatches) > 1 {
+		trackInfo.Layout = strings.TrimSpace(layoutMatches[1])
+	}
+
+	return trackInfo
+}
+
+// GripInfo contient les informations sur l'adhérence et la température
+type GripInfo struct {
+	Grip      float64
+	TrackTemp float64
+	AirTemp   float64
+}
+
+// ExtractGripInfo extrait les informations d'adhérence et de température
+func ExtractGripInfo(output string) GripInfo {
+	gripInfo := GripInfo{}
+
+	// Exemple: "Grip: 0.95, Track temp: 25.5, Air temp: 22.3"
+	gripRegex := regexp.MustCompile(`[Gg]rip:?\s*([\d.]+)`)
+	trackTempRegex := regexp.MustCompile(`[Tt]rack\s*[Tt]emp(?:erature)?:?\s*([\d.]+)`)
+	airTempRegex := regexp.MustCompile(`[Aa]ir\s*[Tt]emp(?:erature)?:?\s*([\d.]+)`)
+
+	gripMatches := gripRegex.FindStringSubmatch(output)
+	if len(gripMatches) > 1 {
+		grip, err := strconv.ParseFloat(gripMatches[1], 64)
+		if err == nil {
+			gripInfo.Grip = grip
+		}
+	}
+
+	trackTempMatches := trackTempRegex.FindStringSubmatch(output)
+	if len(trackTempMatches) > 1 {
+		trackTemp, err := strconv.ParseFloat(trackTempMatches[1], 64)
+		if err == nil {
+			gripInfo.TrackTemp = trackTemp
+		}
+	}
+
+	airTempMatches := airTempRegex.FindStringSubmatch(output)
+	if len(airTempMatches) > 1 {
+		airTemp, err := strconv.ParseFloat(airTempMatches[1], 64)
+		if err == nil {
+			gripInfo.AirTemp = airTemp
+		}
+	}
+
+	return gripInfo
+}
+
+// CSPInfo contient les informations sur CSP (Custom Shaders Patch)
+type CSPInfo struct {
+	Version  string
+	Features []string
+}
+
+// ExtractCSPInfo extrait les informations CSP
+func ExtractCSPInfo(output string) CSPInfo {
+	cspInfo := CSPInfo{}
+
+	// Exemple: "CSP version: 0.1.79"
+	versionRegex := regexp.MustCompile(`CSP\s*[Vv]ersion:?\s*([\d.]+)`)
+	featuresRegex := regexp.MustCompile(`CSP\s*[Ff]eatures:?\s*(.+)`)
+
+	versionMatches := versionRegex.FindStringSubmatch(output)
+	if len(versionMatches) > 1 {
+		cspInfo.Version = strings.TrimSpace(versionMatches[1])
+	}
+
+	featuresMatches := featuresRegex.FindStringSubmatch(output)
+	if len(featuresMatches) > 1 {
+		features := strings.Split(featuresMatches[1], ",")
+		for i, feature := range features {
+			features[i] = strings.TrimSpace(feature)
+		}
+		cspInfo.Features = features
+	}
+
+	return cspInfo
+}
+
+// ParseVersionToFloat convertit une chaîne de version en nombre à virgule flottante
+func ParseVersionToFloat(version string) float64 {
+	// Exemple: "0.1.79" -> 0.179
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		return 0
+	}
+
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0
+	}
+
+	minor := ""
+	for i := 1; i < len(parts); i++ {
+		minor += parts[i]
+	}
+
+	minorVal, err := strconv.Atoi(minor)
+	if err != nil {
+		return 0
+	}
+
+	// Calculer la valeur décimale
+	minorFloat := float64(minorVal)
+	for minorFloat >= 1 {
+		minorFloat /= 10
+	}
+
+	return float64(major) + minorFloat
+}
+
+// CollisionInfo contient les informations sur une collision
+type CollisionInfo struct {
+	Car1  string
+	Car2  string
+	Speed float64
+	Force float64
+}
+
+// ExtractCollisionInfo extrait les informations de collision
+func ExtractCollisionInfo(output string) CollisionInfo {
+	collisionInfo := CollisionInfo{}
+
+	// Exemple: "Collision between Car1 and Car2 at speed 120.5 with force 85.3"
+	car1Regex := regexp.MustCompile(`[Cc]ollision\s*(?:between)?\s*(\w+)`)
+	car2Regex := regexp.MustCompile(`and\s*(\w+)`)
+	speedRegex := regexp.MustCompile(`speed\s*([\d.]+)`)
+	forceRegex := regexp.MustCompile(`force\s*([\d.]+)`)
+
+	car1Matches := car1Regex.FindStringSubmatch(output)
+	if len(car1Matches) > 1 {
+		collisionInfo.Car1 = strings.TrimSpace(car1Matches[1])
+	}
+
+	car2Matches := car2Regex.FindStringSubmatch(output)
+	if len(car2Matches) > 1 {
+		collisionInfo.Car2 = strings.TrimSpace(car2Matches[1])
+	}
+
+	speedMatches := speedRegex.FindStringSubmatch(output)
+	if len(speedMatches) > 1 {
+		speed, err := strconv.ParseFloat(speedMatches[1], 64)
+		if err == nil {
+			collisionInfo.Speed = speed
+		}
+	}
+
+	forceMatches := forceRegex.FindStringSubmatch(output)
+	if len(forceMatches) > 1 {
+		force, err := strconv.ParseFloat(forceMatches[1], 64)
+		if err == nil {
+			collisionInfo.Force = force
+		}
+	}
+
+	return collisionInfo
+}
+
+// LapInfo contient les informations sur un tour
+type LapInfo struct {
+	PlayerID   string
+	PlayerName string
+	CarModel   string
+	LapTime    int64 // en millisecondes
+	IsBest     bool
+}
+
+// ExtractLapInfo extrait les informations de tour
+func ExtractLapInfo(output string) LapInfo {
+	lapInfo := LapInfo{}
+
+	// Exemple: "LAP: Player (SteamID) completed lap in 1:45.678 (best: yes) with car ferrari_f40"
+	playerRegex := regexp.MustCompile(`LAP:?\s*(\w+)`)
+	steamIDRegex := regexp.MustCompile(`\((\d+)\)`)
+	timeRegex := regexp.MustCompile(`(?:in|time)\s*(\d+):(\d+)\.(\d+)`)
+	bestRegex := regexp.MustCompile(`best:?\s*(yes|no)`)
+	carRegex := regexp.MustCompile(`(?:with|car)\s*(\w+)`)
+
+	playerMatches := playerRegex.FindStringSubmatch(output)
+	if len(playerMatches) > 1 {
+		lapInfo.PlayerName = strings.TrimSpace(playerMatches[1])
+	}
+
+	steamIDMatches := steamIDRegex.FindStringSubmatch(output)
+	if len(steamIDMatches) > 1 {
+		lapInfo.PlayerID = strings.TrimSpace(steamIDMatches[1])
+	}
+
+	timeMatches := timeRegex.FindStringSubmatch(output)
+	if len(timeMatches) > 3 {
+		minutes, _ := strconv.ParseInt(timeMatches[1], 10, 64)
+		seconds, _ := strconv.ParseInt(timeMatches[2], 10, 64)
+		millis, _ := strconv.ParseInt(timeMatches[3], 10, 64)
+
+		// Convertir en millisecondes
+		lapInfo.LapTime = minutes*60*1000 + seconds*1000 + millis
+	}
+
+	bestMatches := bestRegex.FindStringSubmatch(output)
+	if len(bestMatches) > 1 {
+		lapInfo.IsBest = strings.ToLower(bestMatches[1]) == "yes"
+	}
+
+	carMatches := carRegex.FindStringSubmatch(output)
+	if len(carMatches) > 1 {
+		lapInfo.CarModel = strings.TrimSpace(carMatches[1])
+	}
+
+	return lapInfo
+}
